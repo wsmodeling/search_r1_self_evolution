@@ -170,12 +170,11 @@ We sincerely appreciate the efforts of these teams for their contributions to op
 
 To be added
 
-<!-- ```md
-@misc{Search-R1,
-  author       = {xxx},
-  title        = {xxx},
-  year         = {2025},
-  organization = {GitHub},
-  url          = {https://github.com/PeterGriffinJin/Search-R1},
+```bibtex
+@misc{jin2025searchr1,
+  title   = {Search-R1: Train your LLMs to reason and call a search engine with reinforcement learning},
+  author  = {Bowen Jin and Zhenrui Yue and Hansi Zeng and Jiawei Han},
+  howpublished = {\url{https://github.com/PeterGriffinJin/Search-R1}},
+  year         = {2025}
 }
-``` -->
+```
