@@ -6,6 +6,7 @@ Through RL (rule-based outcome reward), the 3B **base** LLM (both Qwen2.5-3b-bas
 
 Twitter thread: [link](https://x.com/BowenJin13/status/1895544294473109889); Full experiment log: [link](https://wandb.ai/peterjin/Search-R1-open)
 
+Paper: [link](); Model and data: [link](https://huggingface.co/collections/PeterJinGo/search-r1-67d1a021202731cb065740f5);
 
 The paper will be released soon!
 
