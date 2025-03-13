@@ -4,7 +4,7 @@
 ### Download the dataset
 
 ```bash
-huggingface-cli download --repo-type dataset PeterJinGo/nq_hotpotqa_train --local-dir $WORK_DIR/data/hotpot_qa
+huggingface-cli download --repo-type dataset PeterJinGo/nq_hotpotqa_train --local-dir $WORK_DIR/data/nq_hotpotqa_train
 ```
 
 ### Run PPO training
