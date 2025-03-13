@@ -23,4 +23,4 @@ bash train_ppo.sh
 bash evaluate.sh
 ```
 
-You can change ```$BASE_MODEL``` to the path of the model you would loike to evaluate.
+You can change ```$BASE_MODEL``` to the path of the model you would like to evaluate.
