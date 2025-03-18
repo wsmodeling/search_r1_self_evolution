@@ -170,10 +170,10 @@ We thank Jinsung Yoon and Sercan Arik for insightful discussions.
 ## Citations
 
 ```bibtex
-@misc{jin2025searchr1,
-  title   = {Search-R1: Train your LLMs to reason and call a search engine with reinforcement learning},
-  author  = {Bowen Jin and Zhenrui Yue and Hansi Zeng and Jiawei Han},
-  howpublished = {\url{https://github.com/PeterGriffinJin/Search-R1}},
-  year         = {2025}
+@article{jin2025search,
+  title={Search-R1: Training LLMs to Reason and Leverage Search Engines with Reinforcement Learning},
+  author={Jin, Bowen and Zeng, Hansi and Yue, Zhenrui and Wang, Dong and Zamani, Hamed and Han, Jiawei},
+  journal={arXiv preprint arXiv:2503.09516},
+  year={2025}
 }
 ```
