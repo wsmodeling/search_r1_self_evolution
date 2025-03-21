@@ -17,6 +17,7 @@ You can refer to this [link](https://github.com/PeterGriffinJin/Search-R1/tree/m
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Preliminary results](#preliminary-results)
+- [Inference](#inference)
 - [Use your own dataset](#use-your-own-dataset)
 - [Use your own search engine](#use-your-own-search-engine)
 - [Ackowledge](#acknowledge)
@@ -99,6 +100,20 @@ bash train_ppo.sh
 
 ![multi-turn](public/multi-turn.png)
 
+## Inference
+#### You can play with the trained Search-R1 model with your own question.
+(1) Launch a local retrieval server.
+```bash
+conda activate retriever
+bash retrieval_launch.sh
+```
+
+(2) Run inference.
+```bash
+conda activate searchr1
+python infer.py
+```
+You can modify the ```question``` on line 7 to something you're interested in.
 
 ## Use your own dataset
 
