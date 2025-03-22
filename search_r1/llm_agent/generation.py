@@ -307,15 +307,16 @@ class LLMGenerationManager:
             valid_action_stats += torch.tensor(valid_action, dtype=torch.int)
             valid_search_stats += torch.tensor(is_search, dtype=torch.int)
             
-            meta_info['turns_stats'] = turns_stats.tolist()
-            meta_info['active_mask'] = active_mask.tolist()
-            meta_info['valid_action_stats'] = valid_action_stats.tolist()
-            meta_info['valid_search_stats'] = valid_search_stats.tolist()
 
             original_right_side = self._update_right_side(
                 original_right_side,
                 responses_ids,
             )
+        
+        meta_info['turns_stats'] = turns_stats.tolist()
+        meta_info['active_mask'] = active_mask.tolist()
+        meta_info['valid_action_stats'] = valid_action_stats.tolist()
+        meta_info['valid_search_stats'] = valid_search_stats.tolist()
         
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
