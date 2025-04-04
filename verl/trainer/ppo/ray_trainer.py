@@ -410,7 +410,7 @@ class RayPPOTrainer(object):
         self.val_dataloader = DataLoader(dataset=self.val_dataset,
                                          batch_size=self.config.data.val_batch_size,
                                          shuffle=False,
-                                         drop_last=False,
+                                         drop_last=True,
                                          collate_fn=collate_fn)
 
         print(f'Size of train dataloader: {len(self.train_dataloader)}')
