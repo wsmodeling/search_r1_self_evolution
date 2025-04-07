@@ -20,6 +20,7 @@ You can refer to this [link](https://github.com/PeterGriffinJin/Search-R1/tree/m
 - [Inference](#inference)
 - [Use your own dataset](#use-your-own-dataset)
 - [Use your own search engine](#use-your-own-search-engine)
+- [Features](#features)
 - [Ackowledge](#acknowledge)
 - [Citations](#citations)
 
@@ -171,11 +172,13 @@ The LLM can call the search engine by calling the search API (e.g., "http://127.
 
 You can refer to ```search_r1/search/retriever_server.py``` for an example of launching a local retriever server.
 
-## To do
+## Features
+- Support local sparse retrievers (e.g., BM25). ✔️
+- Support local dense retrievers (both flat indexing and ANN indexing) ✔️
 - Support google search / bing search / brave search API and others. ✔️
-- Support LoRA tuning.
-- Support supervised finetuning.
-- Support off-the-shelf rerankers.
+- Support off-the-shelf neural rerankers.
+- Support different RL methods (e.g., PPO, GRPO, reinforce). ✔️
+- Support different LLMs (e.g., llama3, Qwen2.5, etc). ✔️
 
 ## Acknowledge
 
