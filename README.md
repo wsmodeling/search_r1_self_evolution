@@ -50,7 +50,7 @@ conda activate retriever
 
 # we recommend installing torch with conda for faiss-gpu
 conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 pytorch-cuda=12.1 -c pytorch -c nvidia
-pip install transformers datasets
+pip install transformers datasets pyserini
 
 ## install the gpu version faiss to guarantee efficient RL rollout
 conda install -c pytorch -c nvidia faiss-gpu=1.8.0
@@ -163,6 +163,8 @@ You can change ```retriever_name``` and ```retriever_model``` to your interested
 
 ## Use your own search engine
 
+Our codebase supports local sparse retriever (e.g., BM25), local dense retriever (both flat indexing with GPUs and ANN indexing with CPUs) and online search engine (e.g., Google, Bing, etc). More details can be found [here](https://github.com/PeterGriffinJin/Search-R1/tree/main/docs/retriever.md).
+
 The main philosophy is to launch a local or remote search engine server separately from the main RL training pipeline. 
 
 The LLM can call the search engine by calling the search API (e.g., "http://127.0.0.1:8000/retrieve").
@@ -170,7 +172,7 @@ The LLM can call the search engine by calling the search API (e.g., "http://127.
 You can refer to ```search_r1/search/retriever_server.py``` for an example of launching a local retriever server.
 
 ## To do
-- Support google search / bing search / brave search API and others.
+- Support google search / bing search / brave search API and others. ✔️
 - Support LoRA tuning.
 - Support supervised finetuning.
 - Support off-the-shelf rerankers.
