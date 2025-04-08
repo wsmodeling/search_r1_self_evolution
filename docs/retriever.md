@@ -22,6 +22,7 @@ For local retrievers, we use [wiki-18](https://huggingface.co/datasets/PeterJinG
 
 - If you have a domain specific online search engine (e.g., PubMed search), you can refer to [link](https://github.com/PeterGriffinJin/Search-R1/blob/main/search_r1/search/serp_search_server.py) to integrate it to Search-R1 by yourself.
 
+Search engine launching scripts can be found at [link](https://github.com/PeterGriffinJin/Search-R1/tree/main/example/retriever).
 
 ### Local Sparse Retriever
 

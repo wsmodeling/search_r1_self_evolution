@@ -176,7 +176,7 @@ You can refer to ```search_r1/search/retriever_server.py``` for an example of la
 - Support local sparse retrievers (e.g., BM25). ✔️
 - Support local dense retrievers (both flat indexing and ANN indexing) ✔️
 - Support google search / bing search / brave search API and others. ✔️
-- Support off-the-shelf neural rerankers.
+- Support off-the-shelf neural rerankers. ✔️
 - Support different RL methods (e.g., PPO, GRPO, reinforce). ✔️
 - Support different LLMs (e.g., llama3, Qwen2.5, etc). ✔️
 
