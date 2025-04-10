@@ -50,7 +50,7 @@ More script examples can be found [here](https://github.com/PeterGriffinJin/Sear
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export DATA_DIR=/home/peterjin/mnt/Search-R1/data/nq_search
+export DATA_DIR='data/nq_search'
 
 WAND_PROJECT="Search-R1-release"
 RAY_DASHBOARD_ADDRESS="<address>:8265"
