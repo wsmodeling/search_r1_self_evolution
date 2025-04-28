@@ -198,6 +198,13 @@ Its implementation is built upon [veRL](https://github.com/volcengine/verl) and 
 We sincerely appreciate the efforts of these teams for their contributions to open-source research and development.
 We thank Jinsung Yoon and Sercan Arik for insightful discussions.
 
+## Awesome work powered or inspired by Search-R1
+
+- [DeepResearcher](https://github.com/GAIR-NLP/DeepResearcher): Scaling Deep Research via Reinforcement Learning in Real-world Environments. [![[code]](https://img.shields.io/github/stars/GAIR-NLP/DeepResearcher)](https://github.com/GAIR-NLP/DeepResearcher)
+- [Multimodal-Search-R1](https://github.com/EvolvingLMMs-Lab/multimodal-search-r1): Incentivizing LMMs to Search. [![[code]](https://img.shields.io/github/stars/EvolvingLMMs-Lab/multimodal-search-r1)](https://github.com/EvolvingLMMs-Lab/multimodal-search-r1)
+- [OTC](https://arxiv.org/pdf/2504.14870): Optimal Tool Calls via Reinforcement Learning.
+
+
 ## Citations
 
 ```bibtex
