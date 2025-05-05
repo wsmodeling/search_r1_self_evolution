@@ -196,7 +196,6 @@ You can refer to ```search_r1/search/retriever_server.py``` for an example of la
 The concept of Search-R1 is inspired by [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-R1) and [TinyZero](https://github.com/Jiayi-Pan/TinyZero/tree/main).
 Its implementation is built upon [veRL](https://github.com/volcengine/verl) and [RAGEN](https://github.com/ZihanWang314/RAGEN/tree/main). 
 We sincerely appreciate the efforts of these teams for their contributions to open-source research and development.
-We thank Jinsung Yoon and Sercan Arik for insightful discussions.
 
 ## Awesome work powered or inspired by Search-R1
 
@@ -209,8 +208,8 @@ We thank Jinsung Yoon and Sercan Arik for insightful discussions.
 
 ```bibtex
 @article{jin2025search,
-  title={Search-R1: Training LLMs to Reason and Leverage Search Engines with Reinforcement Learning},
-  author={Jin, Bowen and Zeng, Hansi and Yue, Zhenrui and Wang, Dong and Zamani, Hamed and Han, Jiawei},
+  title={Search-r1: Training llms to reason and leverage search engines with reinforcement learning},
+  author={Jin, Bowen and Zeng, Hansi and Yue, Zhenrui and Yoon, Jinsung and Arik, Sercan and Wang, Dong and Zamani, Hamed and Han, Jiawei},
   journal={arXiv preprint arXiv:2503.09516},
   year={2025}
 }
