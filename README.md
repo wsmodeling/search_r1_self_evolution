@@ -1,5 +1,9 @@
 # Search-R1: Train your LLMs to reason and call a search engine with reinforcement learning
 
+<div align="center">
+  <img src="public/logo.png" alt="logo" width="300"/>
+</div>
+
 <!-- <strong>Search-R1</strong> is a reinforcement learning framework for <em>training reasoning and searching (tool-call) interleaved LLMs</em>.  -->
 <!-- We built upon [veRL](https://github.com/volcengine/verl). -->
 **Search-R1** is a reinforcement learning framework designed for training **reasoning-and-searching interleaved LLMs**—language models that learn to reason and make tool calls (e.g., to search engines) in a coordinated manner.
