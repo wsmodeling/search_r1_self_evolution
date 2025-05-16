@@ -1,8 +1,9 @@
 # Search-R1: Train your LLMs to reason and call a search engine with reinforcement learning
 
 <div align="center">
-  <img src="public/logo.png" alt="logo" width="300"/>
+  <img src="https://raw.githubusercontent.com/PeterGriffinJin/Search-R1/main/public/logo.png" alt="logo" width="300"/>
 </div>
+
 
 <!-- <strong>Search-R1</strong> is a reinforcement learning framework for <em>training reasoning and searching (tool-call) interleaved LLMs</em>.  -->
 <!-- We built upon [veRL](https://github.com/volcengine/verl). -->
