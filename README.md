@@ -161,7 +161,7 @@ You can refer to ```scripts/data_process/nq_search.py``` for a concrete data pro
 
 It is recommended to make your corpus a jsonl file, where each line (a dictionary with "id" key and "contents" key) corresponds to one passage. You can refer to ```example/corpus.jsonl``` for an example.
 
-The "id" key corresponds to the passage id, while the "contents" key corresponds to the passage content.
+The "id" key corresponds to the passage id, while the "contents" key corresponds to the passage content ('"' + title + '"\n' + text).
 For example:
 ```
 {"id": "0", "contents": "Evan Morris Evan L. Morris (January 26, 1977 \u2013 July 9, 2015) was a lobbyist for Genentech and its parent corporation Roche in Washington."}
