@@ -91,7 +91,7 @@ cat $save_path/part_* > $save_path/e5_HNSW64.index
 ```
 
 
-(2) Launch a local BM25 retriever server.
+(2) Launch a local ANN dense retriever server.
 ```bash
 conda activate retriever
 
