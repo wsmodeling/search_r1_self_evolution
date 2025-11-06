@@ -103,9 +103,43 @@ import hydra
 
 @hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
 def main(config):
+    print("[DEBUG] Before initializing ray...")
     if not ray.is_initialized():
-        # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        print("[DEBUG] Initializing ray...")
+
+        ray.init(
+            address="auto",          # 或 address="127.0.0.1:6379"
+            runtime_env={
+                "env_vars": {
+                    "TOKENIZERS_PARALLELISM": "true",
+                    "NCCL_DEBUG": "WARN",
+                    "NCCL_P2P_DISABLE": "1",
+                    "NCCL_IB_DISABLE": "1",
+                }
+            },
+            ignore_reinit_error=True,
+        )
+        # import os
+        # os.environ["RAY_TMPDIR"] = "/dev/shm/ray_tmp"
+        # os.environ["NCCL_P2P_DISABLE"] = "1"
+        # os.environ["NCCL_IB_DISABLE"] = "1"
+        # os.environ["NCCL_SHM_DISABLE"] = "1"
+        # os.environ["RAY_USE_MULTIPROCESSING_CPU_COUNT"] = "1"
+        # # this is for local ray cluster
+        # ray.init(
+        #     local_mode=False,
+        #     num_cpus=40, num_gpus=2,
+        #     runtime_env={'env_vars': {
+        #         'TOKENIZERS_PARALLELISM': 'true',
+        #         'NCCL_DEBUG': 'WARN',
+        #         "NCCL_P2P_DISABLE": "1",
+        #         "NCCL_IB_DISABLE": "1",}
+        #     },
+        #     # _system_config={
+        #     #     "enable_object_reconstruction": False,
+        #     #     "ownership_based_object_directory_enabled": False,
+        #     # }
+        # )
 
     ray.get(main_task.remote(config))
 
