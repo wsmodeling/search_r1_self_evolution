@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0
 export DATA_DIR='data/nq_search'
 
 WAND_PROJECT='Search-R1-baseline2'
@@ -16,11 +16,12 @@ export RAY_TMPDIR=/dev/shm/ray_tmp
 export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 export NCCL_SHM_DISABLE=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export RAY_USE_MULTIPROCESSING_CPU_COUNT=1
 ray start --head \
   --port=6379 \
-  --num-cpus=40 \
-  --num-gpus=2 \
+  --num-cpus=20 \
+  --num-gpus=1 \
   --temp-dir=/dev/shm/ray_tmp \
   --node-ip-address=127.0.0.1
 echo "Ray start complete"
@@ -36,7 +37,7 @@ echo "Ray start complete"
 
 # export BASE_MODEL='Qwen/Qwen2.5-3B'
 # update EXPERIMENT_NAME to avoid overwriting previous logs and checkpoints
-# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-em-baseline
+# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-em-test
 # export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
 # export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-it-em
 export BASE_MODEL='Qwen/Qwen2.5-7B'
@@ -59,8 +60,8 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     data.val_files=$DATA_DIR/test.parquet \
     data.train_data_num=null \
     data.val_data_num=null \
-    data.train_batch_size=32 \
-    data.val_batch_size=16 \
+    data.train_batch_size=1 \
+    data.val_batch_size=1 \
     data.max_prompt_length=8192 \
     data.max_response_length=500 \
     data.max_start_length=6144 \
@@ -73,28 +74,28 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.285 \
     actor_rollout_ref.actor.use_kl_loss=true \
-    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
-    actor_rollout_ref.actor.ppo_micro_batch_size=4 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=1 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=1 \
     actor_rollout_ref.actor.fsdp_config.param_offload=true \
     actor_rollout_ref.actor.fsdp_config.grad_offload=true \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
-    actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size=1 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     algorithm.no_think_rl=false \
-    actor_rollout_ref.rollout.n_agent=3 \
+    actor_rollout_ref.rollout.n_agent=2 \
     actor_rollout_ref.rollout.temperature=1 \
     actor_rollout_ref.actor.state_masking=true \
     trainer.logger=['wandb'] \
     +trainer.val_only=false \
     +trainer.val_before_train=false \
     trainer.default_hdfs_dir=null \
-    trainer.n_gpus_per_node=2 \
+    trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=20 \
@@ -109,16 +110,8 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     retriever.topk=3 \
     num_revisions=1 \
     enable_transfer_learning=false \
-    enable_prompt_response_verification=true \
+    enable_prompt_response_verification=false \
     2>&1 | tee $EXPERIMENT_NAME.log
-
-
-# Prompt-Response Verification Configuration
-# Set enable_prompt_response_verification=true to enable detailed logging of prompt-response matching
-# This shows the first 3 unique prompts with their responses for debugging purposes
-# Useful for verifying that revision and transfer learning responses are correctly matched to prompts
-# Set to false to disable this verbose output and improve training performance
-# Default value is defined in verl/trainer/config/ppo_trainer.yaml (false by default)
 
 
 # memory_db.enable=true \

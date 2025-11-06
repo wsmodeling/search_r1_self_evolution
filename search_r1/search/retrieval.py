@@ -238,6 +238,7 @@ class DenseRetriever(BaseRetriever):
 
     def __init__(self, config: dict):
         super().__init__(config)
+        # self.index = faiss.read_index(self.index_path, faiss.IO_FLAG_MMAP)
         self.index = faiss.read_index(self.index_path)
         if config.faiss_gpu:
             co = faiss.GpuMultipleClonerOptions()

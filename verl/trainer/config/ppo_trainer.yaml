@@ -169,12 +169,26 @@ trainer:
   experiment_name: gsm8k
   logger: [ 'console', 'wandb' ]
   nnodes: 1
-  n_gpus_per_node: 8
+  n_gpus_per_node: 1
   save_freq: -1
   test_freq: -1
   critic_warmup: 0
   default_hdfs_dir: ~/experiments/gsm8k/ppo/${trainer.experiment_name}
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
-
+  
 max_turns: 10
 do_search: true
+
+# Generation config parameters
+num_revisions: 1  # Number of self-revision rounds (0 means no revision)
+enable_transfer_learning: true  # Enable transfer learning between thinking processes from the same prompt
+enable_prompt_response_verification: false  # Enable detailed logging of prompt-response matching for debugging
+
+# Memory database configuration for storing and retrieving low-reward responses
+memory_db:
+  enable: false  # Set to true to enable memory database features
+  db_path: ./memory_db/responses.json  # Path to store the database
+  low_reward_threshold: 0.3  # Save responses with reward score below this threshold
+  retrieval_ratio: 0.2  # Proportion of batch to augment with bad responses (0.2 = 20%)
+  min_retrieval_score: -1.0  # Minimum score for retrieving bad responses
+  max_retrieval_score: 0.5  # Maximum score for retrieving bad responses

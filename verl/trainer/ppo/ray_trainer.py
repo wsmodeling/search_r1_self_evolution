@@ -262,6 +262,15 @@ def compute_data_metrics(batch, use_critic=True):
             torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
     }
 
+    # Add per-token reward statistics
+    token_level_rewards = batch.batch['token_level_rewards']
+    valid_token_rewards = torch.masked_select(token_level_rewards, response_mask)
+    # if len(valid_token_rewards) > 0:
+    #     metrics['critic/token_rewards/mean'] = torch.mean(valid_token_rewards).detach().item()
+    #     metrics['critic/token_rewards/max'] = torch.max(valid_token_rewards).detach().item()
+    #     metrics['critic/token_rewards/min'] = torch.min(valid_token_rewards).detach().item()
+    #     metrics['critic/token_rewards/std'] = torch.std(valid_token_rewards).detach().item()
+
     # metrics for actions
     if 'turns_stats' in batch.meta_info:
         metrics['env/number_of_actions/mean'] = float(np.array(batch.meta_info['turns_stats'], dtype=np.int16).mean())
@@ -361,6 +370,7 @@ class RayPPOTrainer(object):
 
         self._create_dataloader()
         self._init_logger()
+        self._init_memory_db()
     
     def _init_logger(self):
         from verl.utils.tracking import Tracking
@@ -368,6 +378,42 @@ class RayPPOTrainer(object):
                           experiment_name=self.config.trainer.experiment_name,
                           default_backend=self.config.trainer.logger,
                           config=OmegaConf.to_container(self.config, resolve=True))
+
+    def _init_memory_db(self):
+        """Initialize memory database for storing low-reward and bad responses"""
+        # Import memory database
+        try:
+            from memory_db.train.stage_rl.Memory_db.database import JSONDatabase
+
+            # Get memory_db config from trainer config, with defaults
+            memory_db_config = self.config.get('memory_db', {})
+            self.use_memory_db = memory_db_config.get('enable', False)
+
+            if not self.use_memory_db:
+                print("[Memory DB] Memory database is disabled in config")
+                self.memory_db = None
+                return
+
+            # Initialize database
+            db_path = memory_db_config.get('db_path', './memory_db/responses.json')
+            self.memory_db = JSONDatabase(db_path)
+
+            # Memory DB parameters
+            self.memory_db_low_reward_threshold = memory_db_config.get('low_reward_threshold', 0.3)
+            self.memory_db_retrieval_ratio = memory_db_config.get('retrieval_ratio', 0.2)  # 20% of batch
+            self.memory_db_min_score = memory_db_config.get('min_retrieval_score', -1.0)
+            self.memory_db_max_score = memory_db_config.get('max_retrieval_score', 0.5)
+
+            print(f"[Memory DB] Initialized at: {db_path}")
+            print(f"[Memory DB] Low reward threshold: {self.memory_db_low_reward_threshold}")
+            print(f"[Memory DB] Retrieval ratio: {self.memory_db_retrieval_ratio}")
+            print(f"[Memory DB] Score range for retrieval: [{self.memory_db_min_score}, {self.memory_db_max_score}]")
+
+        except ImportError as e:
+            print(f"[Memory DB] Warning: Could not import memory_db module: {e}")
+            print("[Memory DB] Memory database features will be disabled")
+            self.use_memory_db = False
+            self.memory_db = None
 
     def _create_dataloader(self):
         from torch.utils.data import DataLoader
@@ -452,6 +498,8 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
+            num_revisions=self.config.num_revisions,
+            enable_transfer_learning=self.config.enable_transfer_learning,
         )
 
         # Agent config preparation
@@ -461,6 +509,10 @@ class RayPPOTrainer(object):
             config=gen_config,
             is_validation = True,
         )
+
+        print(f"\n{'='*80}")
+        print(f"Validate(self) - start validation")
+        print(f"{'='*80}")
 
         if not self.config.do_search:
             for test_data in self.val_dataloader:
@@ -499,7 +551,7 @@ class RayPPOTrainer(object):
                 timing_raw = {}
                 test_batch: DataProto = DataProto.from_single_dict(batch_dict)
                 # test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
-                
+
                 test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
                 test_gen_batch.meta_info = {
                     'eos_token_id': self.tokenizer.eos_token_id,
@@ -512,7 +564,7 @@ class RayPPOTrainer(object):
                     first_input_ids = test_gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone()
                     with _timer('gen', timing_raw):
                         generation_manager.timing_raw = timing_raw
-                        final_gen_batch_output = generation_manager.run_llm_loop(
+                        final_gen_batch_output = generation_manager.run_llm_loop_self_evolve(
                             gen_batch=test_gen_batch,
                             initial_input_ids=first_input_ids,
                         )
@@ -683,22 +735,33 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
+            num_revisions=self.config.num_revisions,
+            enable_transfer_learning=self.config.enable_transfer_learning,
         )
 
         generation_manager = LLMGenerationManager(
             tokenizer=self.tokenizer,
             actor_rollout_wg=self.actor_rollout_wg,
             config=gen_config,
+            n_agent=self.config.actor_rollout_ref.rollout.n_agent,
         )
+
+        print(f"\n{'='*80}")
+        print(f"fit(self) - start training")
+        print(f"{'='*80}")
 
         # start training loop
         for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
-                print(f'epoch {epoch}, step {self.global_steps}')
+            for batch_idx, batch_dict in enumerate(self.train_dataloader):
+                print(f"\n{'='*100}")
+                print(f'Training Batch: epoch {epoch}, batch {batch_idx}, step {self.global_steps}')
+                print(f"\n{'='*100}")
+
                 metrics = {}
                 timing_raw = {}
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+
                 batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
 
                 # pop those keys for generation
@@ -726,7 +789,10 @@ class RayPPOTrainer(object):
 
                         with _timer('gen', timing_raw):
                             generation_manager.timing_raw = timing_raw
-                            final_gen_batch_output = generation_manager.run_llm_loop(
+                            # Set epoch and batch index for readable printing
+                            generation_manager.current_epoch = epoch
+                            generation_manager.current_batch_idx = batch_idx
+                            final_gen_batch_output = generation_manager.run_llm_loop_self_evolve(
                                 gen_batch=gen_batch,
                                 initial_input_ids=first_input_ids,
                             )
@@ -735,6 +801,9 @@ class RayPPOTrainer(object):
                         for key in final_gen_batch_output.batch.keys():
                             final_gen_batch_output.batch[key] = final_gen_batch_output.batch[key].long()
 
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - compute_log_prob")
+                        print(f"{'='*80}")
                         with torch.no_grad():
                             output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
                             final_gen_batch_output = final_gen_batch_output.union(output)
@@ -742,10 +811,57 @@ class RayPPOTrainer(object):
                         # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                         #                                         dtype=object)
                         batch.non_tensor_batch['uid'] = batch.non_tensor_batch['index'].copy()
-                                            
+
                         # repeat to align with repeated responses in rollout
-                        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        # n = 1, so we comment the line below
+                        # batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+
+                        # If transfer learning is enabled and outputs are merged, we need special handling
+                        if final_gen_batch_output.meta_info.get('is_merged_output', False):
+                            # Transfer learning is enabled
+                            # batch currently has: N × n_agent samples (already repeated at line 721)
+                            # Generation output has: N × n_agent (revision) + N (transfer) = N × (n_agent + 1)
+                            # Structure: [R0_a0, R0_a1, T0, R1_a0, R1_a1, T1, ...]
+
+                            # We need to create: [P0, P0, P0, P1, P1, P1, ...] to match generation output
+                            # where each original prompt appears (n_agent + 1) times
+
+                            # Current batch: [P0, P0, P1, P1, ...] (N × n_agent)
+                            # We need to rebuild it from scratch to get proper grouping
+
+                            n_agent = self.config.actor_rollout_ref.rollout.n_agent
+                            current_batch_size = len(batch.batch)
+                            num_unique_prompts = current_batch_size // n_agent  # N
+
+                            print(f"Transfer learning: current batch size {current_batch_size}, n_agent {n_agent}, unique prompts {num_unique_prompts}")
+                            print(f"Creating batch structure: each prompt repeated {n_agent + 1} times")
+
+                            # Build the new batch by repeating each unique prompt (n_agent + 1) times
+                            new_indices = []
+                            for prompt_idx in range(num_unique_prompts):
+                                # Get the index of the first occurrence of this prompt in current batch
+                                original_idx = prompt_idx * n_agent
+                                # Repeat this index (n_agent + 1) times
+                                new_indices.extend([original_idx] * (n_agent + 1))
+
+                            new_indices_tensor = torch.tensor(new_indices, dtype=torch.long)
+                            batch.reorder(new_indices_tensor)
+
+                            print(f"New batch size after restructuring: {len(batch.batch)}")
+                        else:
+                            # No transfer learning, batch size already matches (both N × n_agent)
+                            # batch was already repeated at line 721, and generation output is also N × n_agent
+                            # No additional repeat needed!
+                            print(f"No transfer learning: batch size {len(batch.batch)} already matches generation output {len(final_gen_batch_output.batch)}")
+
+                        # Augment batch with bad responses from memory database
+                        batch, final_gen_batch_output = self._augment_batch_with_memory_db_responses(batch, final_gen_batch_output)
+
                         batch = batch.union(final_gen_batch_output)
+
+                        # Verify prompt-response matching if enabled
+                        if self.config.get('enable_prompt_response_verification', False):
+                            self._verify_prompt_response_matching(batch)
 
                     ####################
                     ####################
@@ -764,6 +880,9 @@ class RayPPOTrainer(object):
                             batch.batch[key] = batch.batch[key].long()
 
                     if self.use_reference_policy:
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - compute_ref_log_prob")
+                        print(f"{'='*80}")
                         # compute reference log_prob
                         with _timer('ref', timing_raw):
                             ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
@@ -771,6 +890,10 @@ class RayPPOTrainer(object):
 
                     # compute values
                     if self.use_critic:
+
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - compute_values")
+                        print(f"{'='*80}")
                         with _timer('values', timing_raw):
                             values = self.critic_wg.compute_values(batch)
                             batch = batch.union(values)
@@ -779,14 +902,91 @@ class RayPPOTrainer(object):
                         # compute scores. Support both model and function-based.
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
                         # the results from reward model and rule-based results.
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - compute_rm_score")
+                        print(f"{'='*80}")
+
                         if self.use_rm:
                             # we first compute reward model score
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
+                            # Debug: Print scores for first N samples
+                            if 'rm_scores' in reward_tensor.batch:
+                                rm_scores = reward_tensor.batch['rm_scores']
+                                n_samples_to_print = min(5, rm_scores.shape[0])  # Print first 5 samples
+                                print(f"\n[DEBUG] RM Scores for first {n_samples_to_print} samples:")
+                                print(f"{'='*80}")
+                                for i in range(n_samples_to_print):
+                                    score = rm_scores[i].item() if rm_scores[i].numel() == 1 else rm_scores[i].mean().item()
+                                    print(f"  Sample {i}: RM Score = {score:.4f}")
+                                print(f"{'='*80}\n")
+
                         # we combine with rule-based rm
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
+
+                        # Debug: Print final scores for first N samples after reward_fn
+                        n_samples_to_print = min(5, reward_tensor.shape[0])
+                        print(f"\n[DEBUG] Final Token-Level Scores for first {n_samples_to_print} samples (after reward_fn):")
+                        print(f"{'='*80}")
+
+                        # Get prompts and responses for context
+                        prompts = batch.batch.get('prompts', None)
+                        responses = batch.batch.get('responses', None)
+
+                        for i in range(n_samples_to_print):
+                            print(f"\n--- Sample {i} ---")
+
+                            # Print prompt if available
+                            if prompts is not None:
+                                prompt_ids = prompts[i]
+                                # Decode prompt
+                                from transformers import AutoTokenizer
+                                if not hasattr(self, '_debug_tokenizer'):
+                                    # Cache tokenizer for efficiency
+                                    model_path = self.config.actor_rollout_ref.model.get('path', self.config.actor_rollout_ref.model.get('pretrained_model', 'Qwen/Qwen2.5-7B'))
+                                    self._debug_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+                                prompt_text = self._debug_tokenizer.decode(prompt_ids, skip_special_tokens=True)
+                                # Truncate long prompts
+                                if len(prompt_text) > 200:
+                                    prompt_display = prompt_text[:200] + "..."
+                                else:
+                                    prompt_display = prompt_text
+                                print(f"Prompt: {prompt_display}")
+
+                            # Print response if available
+                            if responses is not None:
+                                response_ids = responses[i]
+                                response_text = self._debug_tokenizer.decode(response_ids, skip_special_tokens=True)
+                                # Truncate long responses
+                                if len(response_text) > 200:
+                                    response_display = response_text[:200] + "..."
+                                else:
+                                    response_display = response_text
+                                print(f"Response: {response_display}")
+
+                            # Get the score for this sample (could be token-level or sequence-level)
+                            if reward_tensor.dim() == 1:
+                                score = reward_tensor[i].item()
+                                print(f"Score: {score:.4f}")
+                            else:
+                                # Token-level scores - show mean and range
+                                sample_scores = reward_tensor[i]
+                                mean_score = sample_scores.mean().item()
+                                min_score = sample_scores.min().item()
+                                max_score = sample_scores.max().item()
+                                print(f"Score: Mean = {mean_score:.4f}, Min = {min_score:.4f}, Max = {max_score:.4f}")
+
+                        print(f"\n{'='*80}\n")
+
+                        # add token_level_scores metrics below
+                        # metrics.update(
+                        #     {
+                        #         'token_level_scores/mean': torch.mean(reward_tensor).detach().item()
+                        #     }
+                        # )
 
                         # compute rewards. apply_kl_penalty if available
                         if not self.config.actor_rollout_ref.actor.use_kl_loss:
@@ -797,12 +997,19 @@ class RayPPOTrainer(object):
                         else:
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
+                        # Save low-reward responses to memory database
+                        self._save_low_reward_responses_to_memory_db(batch, self.global_steps)
+
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - compute_advantage")
+                        print(f"{'='*80}")
                         # compute advantages, executed on the driver process
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
+                                                  # num_repeat is not used in compute_advantage?
+                                                  num_repeat=self.config.actor_rollout_ref.rollout.n_agent)
 
                     # update critic
                     if self.use_critic:
@@ -833,9 +1040,30 @@ class RayPPOTrainer(object):
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
 
+                print(f"\n{'='*80}")
+                print(f"STEP {self.global_steps} - compute_data_metrics/compute_timing_metrics")
+                print(f"{'='*80}")      
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                data_metrics = compute_data_metrics(batch=batch, use_critic=self.use_critic)
+                metrics.update(data_metrics)
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+
+                # Debug: Print some key metrics to console
+                # print(f"\n{'='*80}")
+                # print(f"STEP {self.global_steps} - Training Metrics Summary")
+                # print(f"{'='*80}")
+                # print(f"Critic metrics enabled: {self.use_critic}")
+                # if 'critic/rewards/mean' in metrics:
+                #     print(f"  critic/rewards/mean: {metrics['critic/rewards/mean']:.4f}")
+                # if 'critic/score/mean' in metrics:
+                #     print(f"  critic/score/mean: {metrics['critic/score/mean']:.4f}")
+                # if 'critic/advantages/mean' in metrics:
+                #     print(f"  critic/advantages/mean: {metrics['critic/advantages/mean']:.4f}")
+                # if 'env/number_of_actions/mean' in metrics:
+                #     print(f"  env/number_of_actions/mean: {metrics['env/number_of_actions/mean']:.2f}")
+                # print(f"Total metrics being logged: {len(metrics)}")
+                # print(f"Metric names: {list(metrics.keys())[:10]}...")  # Print first 10
+                # print(f"{'='*80}\n")
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
@@ -851,11 +1079,113 @@ class RayPPOTrainer(object):
                         logger.log(data=val_metrics, step=self.global_steps)
                     return
     
+    def _verify_prompt_response_matching(self, batch):
+        """
+        Print prompt-response matching verification for debugging.
+        Shows first 3 unique prompts with their responses to verify correct matching.
+        """
+        print(f"\n{'='*100}")
+        print(f"PROMPT-RESPONSE MATCHING VERIFICATION (Step {self.global_steps})")
+        print(f"{'='*100}")
+        print(f"Showing first 3 unique prompts with their responses...\n")
+
+        # Get unique UIDs
+        if 'uid' in batch.non_tensor_batch:
+            unique_uids = []
+            seen_uids = set()
+            for uid in batch.non_tensor_batch['uid']:
+                if uid not in seen_uids:
+                    unique_uids.append(uid)
+                    seen_uids.add(uid)
+                    if len(unique_uids) >= 3:  # Only show first 3 unique prompts
+                        break
+
+            # For each unique UID, show all its responses
+            for uid_to_show in unique_uids:
+                # Find all indices with this UID
+                uid_indices = [i for i, uid in enumerate(batch.non_tensor_batch['uid']) if uid == uid_to_show]
+
+                # Get the prompt (should be same for all indices with this UID)
+                prompt_idx = uid_indices[0]
+                prompt_ids = batch.batch['prompts'][prompt_idx]
+                prompt_text = self.tokenizer.decode(prompt_ids, skip_special_tokens=True)
+
+                # Truncate prompt for display (show first 2000 chars)
+                prompt_display = prompt_text[:2000] + "..." if len(prompt_text) > 2000 else prompt_text
+
+                print(f"\n{'-'*100}")
+                print(f"UID: {uid_to_show}")
+                print(f"Prompt: {prompt_display}")
+                print(f"Number of responses: {len(uid_indices)}")
+                print(f"{'-'*100}")
+
+                # Categorize responses
+                revision_responses = []
+                transfer_responses = []
+
+                for idx in uid_indices:
+                    response_ids = batch.batch['responses'][idx]
+                    response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+
+                    # Check if it's revision or transfer based on position
+                    # With transfer learning enabled, the structure is group-level concatenation:
+                    # [R0, R1, ..., R(n_agent-1), T, R0, R1, ..., R(n_agent-1), T, ...]
+                    # Each group has (n_agent + 1) responses: n_agent revisions + 1 transfer
+                    # So: indices 0 to n_agent-1 are revision, index n_agent is transfer, then repeat
+                    local_idx = uid_indices.index(idx)
+                    n_agent = self.config.actor_rollout_ref.rollout.n_agent
+
+                    # Determine response type based on meta_info
+                    if hasattr(batch, 'meta_info') and batch.meta_info.get('is_merged_output', False):
+                        # Revision + Transfer learning enabled
+                        # Position within each (n_agent + 1) group
+                        position_in_group = local_idx % (n_agent + 1)
+                        response_type = "Revision" if position_in_group < n_agent else "Transfer"
+                    elif hasattr(batch, 'meta_info') and batch.meta_info.get('generation_type') == 'revision':
+                        # Only revision enabled (no transfer learning)
+                        response_type = "Revision"
+                    else:
+                        # No revision, regular generation
+                        response_type = "Regular"
+
+                    # Truncate response for display (show first 2000 chars)
+                    response_display = response_text[:2000] + "..." if len(response_text) > 2000 else response_text
+
+                    if response_type == "Revision":
+                        revision_responses.append(response_display)
+                    elif response_type == "Transfer":
+                        transfer_responses.append(response_display)
+                    else:  # Regular
+                        revision_responses.append(response_display)  # Treat regular as revision for display
+
+                # Print categorized responses
+                if revision_responses:
+                    print(f"\n{'='*100}")
+                    print(f"\nRevision/Regular Responses ({len(revision_responses)}):")
+                    for i, resp in enumerate(revision_responses[:2], 1):  # Show first 2
+                        print(f"\n{'='*100}")
+                        print(f"  [{i}] {resp}")
+                    if len(revision_responses) > 2:
+                        print(f"  ... and {len(revision_responses) - 2} more")
+
+                if transfer_responses:
+                    print(f"\n{'='*100}")
+                    print(f"\nTransfer Learning Responses ({len(transfer_responses)}):")
+                    for i, resp in enumerate(transfer_responses[:2], 1):  # Show first 2
+                        print(f"\n{'='*100}")
+                        print(f"  [{i}] {resp}")
+                    if len(transfer_responses) > 2:
+                        print(f"  ... and {len(transfer_responses) - 2} more")
+
+        print(f"\n{'='*100}")
+        print(f"END OF PROMPT-RESPONSE MATCHING VERIFICATION")
+        print(f"{'='*100}\n")
+
     def _create_loss_mask(self, batch, metrics):
         """Create loss mask for state tokens."""
         response_length = batch.batch['responses'].shape[-1]
         response_mask = batch.batch['attention_mask'][:, -response_length:]
-        
+
         loss_mask = batch.batch['info_mask'][:, -response_length:]
         batch.batch['loss_mask'] = loss_mask
 
@@ -863,5 +1193,249 @@ class RayPPOTrainer(object):
             'state_tokens/total': loss_mask.sum().item(),
             'state_tokens/coverage': (loss_mask.sum() / response_mask.sum()).item(),
         })
-        
+
         return batch, metrics
+
+    def _save_low_reward_responses_to_memory_db(self, batch, step):
+        """
+        Save responses with low rewards to memory database.
+
+        Args:
+            batch: DataProto containing responses and token_level_scores
+            step: Current training step
+        """
+        if not self.use_memory_db or self.memory_db is None:
+            return
+
+        try:
+            # Extract necessary data
+            token_level_scores = batch.batch['token_level_scores']  # (batch_size, response_length)
+            responses = batch.batch['responses']  # (batch_size, response_length)
+            prompts = batch.batch['prompts']  # (batch_size, prompt_length)
+            response_length = responses.shape[-1]
+            attention_mask = batch.batch['attention_mask']
+            response_mask = attention_mask[:, -response_length:]
+
+            # Compute sequence-level scores (sum over tokens)
+            sequence_scores = (token_level_scores * response_mask).sum(dim=-1)  # (batch_size,)
+
+            # Identify low-reward responses
+            low_reward_mask = sequence_scores < self.memory_db_low_reward_threshold
+            low_reward_indices = torch.where(low_reward_mask)[0].cpu().numpy()
+
+            if len(low_reward_indices) == 0:
+                return
+
+            print(f"\n[Memory DB] Saving {len(low_reward_indices)} low-reward responses (threshold: {self.memory_db_low_reward_threshold})")
+
+            # Save each low-reward response
+            for idx in low_reward_indices:
+                idx = int(idx)
+
+                # Decode prompt and response
+                prompt_ids = prompts[idx].cpu().numpy()
+                response_ids = responses[idx].cpu().numpy()
+
+                # Remove padding tokens
+                prompt_text = self.tokenizer.decode(prompt_ids, skip_special_tokens=True)
+                response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+
+                # Get score
+                score = sequence_scores[idx].item()
+
+                # Get UID if available
+                uid = batch.non_tensor_batch.get('uid', [None] * len(batch.batch))[idx]
+                if uid is None:
+                    uid = f"step{step}_idx{idx}"
+
+                # Prepare training data entry
+                training_data = {
+                    'id': str(uid),
+                    'problem': prompt_text,
+                    'answer': '',  # We don't have ground truth here
+                    'round': step,
+                    'image': [],
+                    'experience': []
+                }
+
+                # Insert or update training data
+                training_id = self.memory_db.insert_training_data(training_data)
+
+                # Add LLM response with score
+                scores = {
+                    'accuracy': score,  # Use sequence score as accuracy
+                    'format': 1.0,
+                    'reason': 1.0,
+                    'length': 1.0
+                }
+
+                self.memory_db.add_llm_response(
+                    training_data_id=training_id,
+                    response=response_text,
+                    scores=scores,
+                    reflexion=f"Low-reward response from step {step}"
+                )
+
+            print(f"[Memory DB] Successfully saved {len(low_reward_indices)} responses")
+
+        except Exception as e:
+            print(f"[Memory DB] Error saving low-reward responses: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _retrieve_bad_responses_from_memory_db(self, current_batch_size):
+        """
+        Retrieve bad responses from memory database to augment training.
+
+        Args:
+            current_batch_size: Current batch size
+
+        Returns:
+            List of tuples (prompt_text, response_text, score) or None if no data
+        """
+        if not self.use_memory_db or self.memory_db is None:
+            return None
+
+        try:
+            # Calculate how many bad responses to retrieve
+            num_to_retrieve = int(current_batch_size * self.memory_db_retrieval_ratio)
+
+            if num_to_retrieve == 0:
+                return None
+
+            # Get all training data
+            all_data = self.memory_db.get_all_training_data()
+
+            if not all_data:
+                print("[Memory DB] No data available in database yet")
+                return None
+
+            # Collect responses with scores in target range
+            candidate_responses = []
+
+            for training_id, training_entry in all_data.items():
+                llm_responses = training_entry.get('llm_answers_and_score', [])
+                problem = training_entry.get('problem', '')
+
+                for response_data in llm_responses:
+                    score = response_data.get('accuracy', 0.0)
+
+                    # Filter by score range
+                    if self.memory_db_min_score <= score <= self.memory_db_max_score:
+                        candidate_responses.append({
+                            'prompt': problem,
+                            'response': response_data.get('ans', ''),
+                            'score': score,
+                            'training_id': training_id
+                        })
+
+            if not candidate_responses:
+                print(f"[Memory DB] No responses found in score range [{self.memory_db_min_score}, {self.memory_db_max_score}]")
+                return None
+
+            # Sample responses (prioritize lower scores)
+            candidate_responses.sort(key=lambda x: x['score'])  # Sort by score ascending
+            selected_responses = candidate_responses[:num_to_retrieve]
+
+            print(f"[Memory DB] Retrieved {len(selected_responses)} bad responses from database")
+            print(f"[Memory DB] Score range of retrieved: [{selected_responses[0]['score']:.3f}, {selected_responses[-1]['score']:.3f}]")
+
+            return selected_responses
+
+        except Exception as e:
+            print(f"[Memory DB] Error retrieving bad responses: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _augment_batch_with_memory_db_responses(self, batch: DataProto, gen_batch_output: DataProto):
+        """
+        Augment the current batch with bad responses retrieved from memory database.
+
+        Args:
+            batch: Original batch (prompts)
+            gen_batch_output: Generated responses batch
+
+        Returns:
+            Augmented batch, augmented gen_batch_output
+        """
+        if not self.use_memory_db or self.memory_db is None:
+            return batch, gen_batch_output
+
+        try:
+            # Retrieve bad responses
+            bad_responses = self._retrieve_bad_responses_from_memory_db(len(batch.batch))
+
+            if bad_responses is None or len(bad_responses) == 0:
+                return batch, gen_batch_output
+
+            print(f"\n[Memory DB] Augmenting batch with {len(bad_responses)} bad responses")
+
+            # Tokenize the retrieved bad responses
+            augment_prompts = []
+            augment_responses = []
+
+            for item in bad_responses:
+                # Tokenize prompt and response
+                prompt_tokens = self.tokenizer.encode(item['prompt'], add_special_tokens=True)
+                response_tokens = self.tokenizer.encode(item['response'], add_special_tokens=False)
+
+                # Truncate if necessary
+                max_prompt_len = batch.batch['prompts'].shape[1]
+                max_response_len = gen_batch_output.batch['responses'].shape[1]
+
+                if len(prompt_tokens) > max_prompt_len:
+                    prompt_tokens = prompt_tokens[:max_prompt_len]
+                if len(response_tokens) > max_response_len:
+                    response_tokens = response_tokens[:max_response_len]
+
+                # Pad to match dimensions
+                prompt_tokens = prompt_tokens + [self.tokenizer.pad_token_id] * (max_prompt_len - len(prompt_tokens))
+                response_tokens = response_tokens + [self.tokenizer.pad_token_id] * (max_response_len - len(response_tokens))
+
+                augment_prompts.append(prompt_tokens)
+                augment_responses.append(response_tokens)
+
+            # Convert to tensors
+            augment_prompts_tensor = torch.tensor(augment_prompts, dtype=torch.long)
+            augment_responses_tensor = torch.tensor(augment_responses, dtype=torch.long)
+
+            # Create attention masks
+            augment_prompt_mask = (augment_prompts_tensor != self.tokenizer.pad_token_id).long()
+            augment_response_mask = (augment_responses_tensor != self.tokenizer.pad_token_id).long()
+
+            # Concatenate with existing batch
+            batch.batch['prompts'] = torch.cat([batch.batch['prompts'], augment_prompts_tensor], dim=0)
+
+            # Update batch metadata (non_tensor_batch)
+            for key in batch.non_tensor_batch.keys():
+                if isinstance(batch.non_tensor_batch[key], np.ndarray):
+                    # Pad with placeholder values
+                    pad_values = np.array([batch.non_tensor_batch[key][0]] * len(bad_responses))
+                    batch.non_tensor_batch[key] = np.concatenate([batch.non_tensor_batch[key], pad_values])
+
+            # Update gen_batch_output
+            gen_batch_output.batch['responses'] = torch.cat([gen_batch_output.batch['responses'], augment_responses_tensor], dim=0)
+
+            # Update attention_mask
+            if 'attention_mask' in gen_batch_output.batch:
+                augment_attention_mask = torch.cat([augment_prompt_mask, augment_response_mask], dim=1)
+                gen_batch_output.batch['attention_mask'] = torch.cat([gen_batch_output.batch['attention_mask'], augment_attention_mask], dim=0)
+
+            # Update other fields in gen_batch_output if they exist
+            if 'old_log_probs' in gen_batch_output.batch:
+                # For old_log_probs, we need to fill with zeros or compute them
+                # For simplicity, we'll fill with small negative values (low probability)
+                augment_log_probs = torch.full((len(bad_responses), gen_batch_output.batch['old_log_probs'].shape[1]),
+                                               -10.0, dtype=gen_batch_output.batch['old_log_probs'].dtype)
+                gen_batch_output.batch['old_log_probs'] = torch.cat([gen_batch_output.batch['old_log_probs'], augment_log_probs], dim=0)
+
+            print(f"[Memory DB] Batch augmented. New batch size: {len(batch.batch)}")
+
+            return batch, gen_batch_output
+
+        except Exception as e:
+            print(f"[Memory DB] Error augmenting batch: {e}")
+            import traceback
+            traceback.print_exc()
+            return batch, gen_batch_output

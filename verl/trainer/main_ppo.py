@@ -85,7 +85,9 @@ class RewardManager():
 
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
-                print(sequences_str)
+                # TODO(weis): here I commented it out, it some times has very long output
+                # many invalid characters
+                # print(sequences_str)
         
         # print(f"[DEBUG] all_scores: {all_scores}")
         # print(f"[DEBUG] all_scores shape: {np.array(all_scores).shape}")
@@ -191,6 +193,7 @@ def main_task(config):
     global_pool_id = 'global_pool'
     resource_pool_spec = {
         global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+        # global_pool_id: [1] * config.trainer.nnodes,
     }
     mapping = {
         Role.ActorRollout: global_pool_id,

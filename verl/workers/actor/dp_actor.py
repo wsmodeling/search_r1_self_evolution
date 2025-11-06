@@ -91,11 +91,28 @@ class DataParallelPPOActor(BasePPOActor):
                 input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)  # ((total_nnz / sp) + pad)
 
                 # only pass input_ids and position_ids to enable flash_attn_varlen
-                output = self.actor_module(input_ids=input_ids_rmpad,
-                                           attention_mask=None,
-                                           position_ids=position_ids_rmpad,
-                                           use_cache=False)  # prevent model thinks we are generating
-                logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
+                # BUGFIX: Catch "batch size must be positive" error and fallback to standard path
+                try:
+                    output = self.actor_module(input_ids=input_ids_rmpad,
+                                               attention_mask=None,
+                                               position_ids=position_ids_rmpad,
+                                               use_cache=False)  # prevent model thinks we are generating
+                    logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
+                except RuntimeError as e:
+                    if "batch size must be positive" in str(e):
+                        print(f"[BUGFIX] Caught 'batch size must be positive' error in remove_padding path.")
+                        print(f"[BUGFIX] Falling back to standard forward pass for this micro-batch (batch_size={batch_size}, seqlen={seqlen}).")
+                        # Fallback to standard path
+                        output = self.actor_module(input_ids=input_ids,
+                                                   attention_mask=attention_mask,
+                                                   position_ids=position_ids,
+                                                   use_cache=False)
+                        # Need to convert to rmpad format for rest of the code
+                        logits_full = output.logits  # (batch_size, seqlen, vocab_size)
+                        # Unpad to match expected format
+                        logits_rmpad = logits_full.reshape(-1, logits_full.size(-1))[attention_mask.reshape(-1) != 0]  # (total_nnz, vocab_size)
+                    else:
+                        raise
 
                 logits_rmpad.div_(temperature)
 

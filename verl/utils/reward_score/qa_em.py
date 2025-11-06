@@ -93,21 +93,25 @@ def compute_score_em(solution_str, ground_truth, method='strict', format_score=0
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str)
-    do_print = random.randint(1, 64) == 1
-    
-    if do_print:
-        print(f"--------------------------------")
-        print(f"Golden answers: {ground_truth['target']}")
-        print(f"Extracted answer: {answer}")
-        print(f"Solution string: {solution_str}")
+    do_print = True # random.randint(1, 64) == 1
     
     if answer is None:
-        return 0
+        final_score = 0
     else:
         if em_check(answer, ground_truth['target']):
-            return score
+            final_score = score
         else:
-            return format_score
+            final_score = format_score
+
+    if do_print:
+        print(f"\n{'='*80}\n")
+        print(f"Golden answers: {ground_truth['target']}")
+        print(f"Extracted answer: {answer}")
+        print(f"Score: {final_score}")
+        print(f"Solution string: {solution_str}")
+        print(f"\n{'='*80}\n")
+
+    return final_score
 
 
 def compute_score_subem(solution_str, ground_truth, method='strict', format_score=0., score=1.):
@@ -121,18 +125,22 @@ def compute_score_subem(solution_str, ground_truth, method='strict', format_scor
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str)
-    do_print = random.randint(1, 64) == 1
-    
-    if do_print:
-        print(f"--------------------------------")
-        print(f"Golden answers: {ground_truth['target']}")
-        print(f"Extracted answer: {answer}")
-        print(f"Solution string: {solution_str}")
-    
+    do_print = True # random.randint(1, 64) == 1
+
     if answer is None:
-        return 0
+        final_score = 0
     else:
         if subem_check(answer, ground_truth['target']):
-            return score
+            final_score = score
         else:
-            return format_score
+            final_score = format_score
+
+    if do_print:
+        print(f"\n{'='*80}\n")
+        print(f"Golden answers: {ground_truth['target']}")
+        print(f"Extracted answer: {answer}")
+        print(f"Score: {final_score}")
+        print(f"Solution string: {solution_str}")
+        print(f"\n{'='*80}\n")
+
+    return final_score

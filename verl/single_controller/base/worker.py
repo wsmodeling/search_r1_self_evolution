@@ -88,19 +88,28 @@ class Worker(WorkerHelper):
         # note that here we use int to distinguish
         disable_worker_init = int(os.environ.get('DISABLE_WORKER_INIT', 0))
         if disable_worker_init:
+            print(f"[Worker.__new__] DISABLE_WORKER_INIT is set, skipping _configure_before_init for {cls.__name__}")
             return instance
 
         rank = os.environ.get("RANK", None)
         worker_group_prefix = os.environ.get("WG_PREFIX", None)
 
+        print(f"[Worker.__new__] cls.__name__={cls.__name__}, rank={rank}, worker_group_prefix={worker_group_prefix}")
+        print(f"[Worker.__new__] 'ActorClass(' in cls.__name__: {'ActorClass(' in cls.__name__}")
+
         # when decorator @ray.remote applies, __new__ will be called while we don't want to apply _configure_before_init
         if None not in [rank, worker_group_prefix] and 'ActorClass(' not in cls.__name__:
+            print(f"[Worker.__new__] Calling _configure_before_init for rank {rank}")
             instance._configure_before_init(f"{worker_group_prefix}_register_center", int(rank))
+        else:
+            print(f"[Worker.__new__] Skipping _configure_before_init")
 
         return instance
 
     def _configure_before_init(self, register_center_name: str, rank: int):
         assert isinstance(rank, int), f"rank must be int, instead of {type(rank)}"
+
+        print(f"[Worker._configure_before_init] register_center_name={register_center_name}, rank={rank}")
 
         if rank == 0:
             master_addr, master_port = self.get_availale_master_addr_port()
@@ -109,12 +118,19 @@ class Worker(WorkerHelper):
                 "MASTER_PORT": master_port,
             }
 
+            print(f"[Worker._configure_before_init] rank==0, creating register_center with name={register_center_name}")
+            print(f"[Worker._configure_before_init] master_addr={master_addr}, master_port={master_port}")
+
             if os.getenv("WG_BACKEND", None) == "ray":
                 from verl.single_controller.base.register_center.ray import create_worker_group_register_center
+                print(f"[Worker._configure_before_init] Creating Ray register_center actor")
                 self.register_center = create_worker_group_register_center(name=register_center_name,
                                                                            info=rank_zero_info)
+                print(f"[Worker._configure_before_init] Successfully created register_center: {self.register_center}")
 
             os.environ.update(rank_zero_info)
+        else:
+            print(f"[Worker._configure_before_init] rank!= 0, not creating register_center")
 
     def __init__(self, cuda_visible_devices=None) -> None:
         # construct a meta from envrionment variable. Note that the import must be inside the class because it is executed remotely

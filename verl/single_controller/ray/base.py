@@ -266,10 +266,24 @@ class RayWorkerGroup(WorkerGroup):
                 if rank == 0:
                     register_center_actor = None
                     for _ in range(120):
-                        if f"{self.name_prefix}_register_center" not in list_named_actors():
+                        # Check across all namespaces to find the register_center actor
+                        all_actors = list_named_actors(all_namespaces=True)
+                        found = False
+                        for actor_info in all_actors:
+                            if actor_info.get('name') == f"{self.name_prefix}_register_center":
+                                found = True
+                                break
+
+                        if not found:
                             time.sleep(1)
                         else:
-                            register_center_actor = ray.get_actor(f"{self.name_prefix}_register_center")
+                            # Try to get the actor - it should be in the same namespace as the worker
+                            try:
+                                register_center_actor = ray.get_actor(f"{self.name_prefix}_register_center")
+                            except ValueError:
+                                # If not found in current namespace, try without namespace specification
+                                time.sleep(1)
+                                continue
                             break
                     assert register_center_actor is not None, f"failed to get register_center_actor: {self.name_prefix}_register_center in {list_named_actors(all_namespaces=True)}"
                     rank_zero_info = ray.get(register_center_actor.get_rank_zero_info.remote())
