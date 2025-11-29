@@ -180,7 +180,7 @@ max_turns: 10
 do_search: true
 
 # Generation config parameters
-num_revisions: 1  # Number of self-revision rounds (0 means no revision)
+enable_revision: true  # Whether to perform self-revision
 enable_transfer_learning: true  # Enable transfer learning between thinking processes from the same prompt
 enable_prompt_response_verification: false  # Enable detailed logging of prompt-response matching for debugging
 

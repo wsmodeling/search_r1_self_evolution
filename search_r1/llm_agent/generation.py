@@ -1,6 +1,7 @@
 from doctest import Example
 import torch
 import re
+import time
 from collections import defaultdict
 import os
 from typing import List, Dict, Any, Tuple
@@ -23,39 +24,214 @@ class GenerationConfig:
     no_think_rl: bool=False
     search_url: str = None
     topk: int = 3
-    num_revisions: int = 1  # Number of self-revision rounds (0 means no revision)
-    # You are a helpful assistant.
-    # Answer the given question. You must conduct reasoning inside <tool_call> and <tool_call> first every time you get new information. After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. You can search as many times as your want. If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: total number of death row inmates in the us?
-# The response may includes instruction below from system (not model) in the middle to guide to the model. \n\nMy previous action is invalid. If I want to search, I should put the query between <search> and </search>. If I want to give the final answer, I should put the answer between <answer> and </answer>. Let me try again. \n\n It is not part of the model output and we should avoid outputing it in revised solution. 
+    enable_revision: bool = True  # Whether to perform self-revision
+    """"
+    system
+    You are a helpful assistant.
+    user
+    Answer the given question. You must conduct reasoning inside <think> and </think> first every time you get new information. After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. You can search as many times as your want. If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: big little lies season 2 how many episodes?
+    assistant
 
-    top_instruction: str = "\n\nYou are an expert in analyzing LLM agent thinking process. You will be given the prompt and response. Please analyze the response and develop an revised solution. Here is the prompt:\n\n"  # Instruction shown at the top during revision
-    previous_response_instruction: str = "\n\nHere is the original response: \n\n"  # Instruction shown before the previous response during revision
-    # revision_prompt: str = "\n\nFor the response above please develop the revised solution, you may consider revise the search query, etc. Please still follow the original instructions to answer the question. \n\n You must conduct reasoning inside <think> and </think> first every time you get new information. After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. You can search as many times as your want. If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>\n\n"  # Prompt for self-revision
+    # The response may includes instruction below from system (not model) in the middle to guide to the model. \n\nMy previous action is invalid. If I want to search, I should put the query between <search> and </search>. If I want to give the final answer, I should put the answer between <answer> and </answer>. Let me try again. \n\n It is not part of the model output and we should avoid outputing it in revised solution. 
+    """
+    # Complete prompt template for analysis step
+    # This shows the entire structure of what the LLM sees when analyzing a response
+    analysis_full_prompt_template: str = """
 
-    revision_prompt: str = "\n\nFor the response above please develop the revised solution, you may consider revise the search query, etc. Please still follow the original instructions to answer the question. \n\n"  # Prompt for self-revision
+You are an expert in analyzing how LLM agents answer questions using external search.
+
+The agent's response uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+
+Note: If the agent uses invalid format, the system automatically adds correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." These are system-generated feedback, not part of the agent's original thinking.
+
+You will be given the question (with instructions) and the agent's response. Please analyze the response to identify strengths and weaknesses. Here is the question:
+
+{original_prompt}
+
+Here is the original response:
+
+{original_response}
+
+Please analyze the response above. Identify:
+1) Search queries (in <search> tags) and their effectiveness in finding relevant information
+2) Reasoning steps (in <think> tags) - any errors or suboptimal search strategy or answer formulation
+3) What information is missing or could be improved
+4) Whether invalid format was used (triggering system correction messages)
+
+Guidelines:
+- Keep response under 200 words total
+- Use plain text, no formatting
+- Be specific and actionable
+
+Provide your analysis:
+
+"""
+
+    # Separate components used in actual implementation
+    # (The templates above show the complete structure, but the code uses these individual pieces)
+
+    top_instruction_for_analysis: str = """
+
+You are an expert in analyzing how LLM agents answer questions using external search.
+
+The agent's response uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+
+Note: If the agent uses invalid format, the system automatically adds correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." These are system-generated feedback, not part of the agent's original thinking.
+
+You will be given the question (with instructions) and the agent's response. Please analyze the response to identify strengths and weaknesses. Here is the question:
+
+"""
+
+    analysis_prompt: str = """
+
+Please analyze the response above. Identify:
+1) Search queries (in <search> tags) and their effectiveness in finding relevant information
+2) Reasoning steps (in <think> tags) - any errors or suboptimal search strategy or answer formulation
+3) What information is missing or could be improved
+4) Whether invalid format was used (triggering system correction messages)
+
+Guidelines:
+- Keep response under 200 words total
+- Use plain text, no formatting
+- Be specific and actionable
+
+Provide your analysis:
+
+"""
 
     # Two-step revision settings
     two_step_revision: bool = True  # Enable two-step revision (analysis first, then revision)
-    analysis_prompt: str = "\n\nPlease analyze the response above. Identify: 1) What search queries were used and their effectiveness, 2) Any errors or suboptimal reasoning steps, 3) What information is missing or could be improved. Provide your analysis:\n\n"  # Prompt for analysis step
-    revision_after_analysis_prompt: str = "\n\nBased on the analysis above, please develop the revised solution. You may consider revising the search query, reasoning steps, etc. Please still follow the original instructions to answer the question.\n\n"  # Prompt for revision after analysis
+
+    # Complete prompt template for revision step (after analysis)
+    # This shows the entire structure of what the LLM sees when revising based on analysis
+    revision_with_analysis_full_prompt_template: str = """
+
+You are an expert in improving how LLM agents answer questions using external search.
+
+The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+
+Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
+
+You will be given the question (with instructions), the agent's original response, and an analysis. Based on these, please develop a revised solution with better search queries and reasoning using the same tag format.
+
+Here is the question:
+
+{original_prompt}
+
+Here is the original response:
+
+{original_response}
+
+Here is the analysis of the original response:
+
+{analysis}
+
+REMINDER - The question (with instructions) you need to answer is:
+
+{original_prompt}
+
+Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+
+"""
+
+    # Complete prompt template for single-step revision (without separate analysis)
+    revision_single_step_full_prompt_template: str = """
+
+You are an expert in improving how LLM agents answer questions using external search.
+
+The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+
+Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
+
+You will be given the question (with instructions) and the agent's original response. Please develop a revised solution with better search queries and reasoning using the same tag format.
+
+Here is the question:
+
+{original_prompt}
+
+Here is the original response:
+
+{original_response}
+
+REMINDER - The question (with instructions) you need to answer is:
+
+{original_prompt}
+
+Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+
+"""
+
+    # Separate components used in actual implementation
+    # (The templates above show the complete structure, but the code uses these individual pieces)
+
+    top_instruction: str = """
+
+You are an expert in improving how LLM agents answer questions using external search.
+
+The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+
+Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
+
+You will be given the question (with instructions), the agent's original response, and an analysis. Based on these, please develop a revised solution with better search queries and reasoning using the same tag format.
+
+Here is the question:
+
+"""
+
+    top_instruction_for_revision_single_step: str = """
+
+You are an expert in improving how LLM agents answer questions using external search.
+
+The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+
+Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
+
+You will be given the question (with instructions) and the agent's original response. Please develop a revised solution with better search queries and reasoning using the same tag format.
+
+Here is the question:
+
+"""
+
+    previous_response_instruction: str = """
+
+Here is the original response:
+
+"""
+
+    analysis_label: str = """
+
+Here is the analysis of the original response:
+
+"""
+
+    question_reminder: str = """
+
+REMINDER - The question (with instructions) you need to answer is:
+
+"""
+
+    revision_after_analysis_prompt: str = """
+
+Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+
+"""
+
+    revision_prompt: str = """
+
+Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+
+"""
 
     enable_transfer_learning: bool = True  # Enable transfer learning between thinking processes from the same prompt
     transfer_use_revised: bool = True  # If True, transfer learning uses revised responses; if False, uses original responses
-#     You are an expert in analyzing and synthesizing agent trajectories. Your task is to critically
-# analyze two different trajectories and create a new optimized trajectory by combining the
-# best elements from both approaches.
-# Your fusion process should: 1. Identify the strengths and weaknesses of each trajectory 2.
-# Extract the most effective strategies and techniques from both 3. Creatively integrate these
-# elements into a coherent new trajectory 4. Ensure the new trajectory maintains logical flow
-# and consistency 5. Avoid simply concatenating the trajectories - create genuine synthesis
-# You need to analyze both trajectories and provide: - Analysis of strengths from trajectory
-# A - Analysis of strengths from trajectory B - A new fused trajectory that combines the best
-# aspects - Rationale for the fusion decisions
-# Output must strictly follow JSON format, containing: - trajectory_a_strengths: list
-# of strengths from first trajectory - trajectory_b_strengths: list of strengths from
-# second trajectory - fused_trajectory: new trajectory
 
-    transfer_prompt: str = "\n\nAbove are multiple previous thinking processes for the same question. Please analyze all the search queries used in these processes and select the best query approach to generate a new, improved thinking process."
+    transfer_prompt: str = """
+
+Above are multiple previous thinking processes for the same question. Please analyze all the search queries used in these processes and select the best query approach to generate a new, improved thinking process.
+
+"""
+
+    debug_llm_io: bool = True  # Print raw input/output of LLM generation for debugging
 
 class LLMGenerationManager:
     def __init__(
@@ -75,7 +251,7 @@ class LLMGenerationManager:
         # For tracking epoch and batch index in prints
         self.current_epoch = None
         self.current_batch_idx = None
-        self.current_revision_round = None  # 0 for initial, 1+ for revisions
+        self.current_phase = None  # 'initial', 'revision', 'transfer', or None
 
         self.tensor_fn = TensorHelper(TensorConfig(
             pad_token_id=tokenizer.pad_token_id,
@@ -83,6 +259,121 @@ class LLMGenerationManager:
             max_obs_length=config.max_obs_length,
             max_start_length=config.max_start_length
         ))
+
+        # Validate that prompt components match templates
+        self._validate_prompt_templates()
+
+    def _validate_prompt_templates(self):
+        """
+        Validate that the separate prompt components can reconstruct the template.
+        This ensures the components stay in sync with the documented templates.
+        """
+        # Test placeholders
+        test_prompt = "TEST_PROMPT"
+        test_response = "TEST_RESPONSE"
+        test_analysis = "TEST_ANALYSIS"
+
+        # Validate analysis template
+        expected_analysis = self.config.analysis_full_prompt_template.format(
+            original_prompt=test_prompt,
+            original_response=test_response
+        )
+        actual_analysis = (
+            self.config.top_instruction_for_analysis +
+            test_prompt +
+            self.config.previous_response_instruction +
+            test_response +
+            self.config.analysis_prompt
+        )
+
+        if expected_analysis.strip() != actual_analysis.strip():
+            print("\n" + "="*80)
+            print("WARNING: Analysis prompt components don't match template!")
+            print("="*80)
+            print("Expected (from template):")
+            print(expected_analysis[:500])
+            print("\nActual (from components):")
+            print(actual_analysis[:500])
+            print("="*80 + "\n")
+
+        # Validate revision with analysis template
+        expected_revision = self.config.revision_with_analysis_full_prompt_template.format(
+            original_prompt=test_prompt,
+            original_response=test_response,
+            analysis=test_analysis
+        )
+        actual_revision = (
+            self.config.top_instruction +
+            test_prompt +
+            self.config.previous_response_instruction +
+            test_response +
+            self.config.analysis_label +
+            test_analysis +
+            self.config.question_reminder +
+            test_prompt +  # Question repeated as reminder
+            self.config.revision_after_analysis_prompt
+        )
+
+        if expected_revision.strip() != actual_revision.strip():
+            print("\n" + "="*80)
+            print("WARNING: Revision prompt components don't match template!")
+            print("="*80)
+            print("Expected (from template):")
+            print(expected_revision[:500])
+            print("\nActual (from components):")
+            print(actual_revision[:500])
+            print("="*80 + "\n")
+
+        # Validate single-step revision template
+        expected_single = self.config.revision_single_step_full_prompt_template.format(
+            original_prompt=test_prompt,
+            original_response=test_response
+        )
+        actual_single = (
+            self.config.top_instruction_for_revision_single_step +
+            test_prompt +
+            self.config.previous_response_instruction +
+            test_response +
+            self.config.question_reminder +
+            test_prompt +  # Question repeated as reminder
+            self.config.revision_prompt
+        )
+
+        if expected_single.strip() != actual_single.strip():
+            print("\n" + "="*80)
+            print("WARNING: Single-step revision prompt components don't match template!")
+            print("="*80)
+            print("Expected (from template):")
+            print(expected_single[:500])
+            print("\nActual (from components):")
+            print(actual_single[:500])
+            print("="*80 + "\n")
+
+    def _strip_special_tokens(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Remove special tokens (eos_token, pad_token) from both ends of token_ids.
+        This prevents <endoftext> and padding from appearing in the middle of concatenated prompts.
+        """
+        eos_token_id = self.tokenizer.eos_token_id
+        pad_token_id = self.tokenizer.pad_token_id
+
+        # Find the first non-special token (strip from beginning)
+        start_idx = 0
+        while start_idx < len(token_ids):
+            token = token_ids[start_idx].item()
+            if token != eos_token_id and token != pad_token_id:
+                break
+            start_idx += 1
+
+        # Find the last non-special token (strip from end)
+        end_idx = len(token_ids)
+        while end_idx > start_idx:
+            token = token_ids[end_idx - 1].item()
+            if token != eos_token_id and token != pad_token_id:
+                break
+            end_idx -= 1
+
+        return token_ids[start_idx:end_idx] if end_idx > start_idx else token_ids[:0]
 
     def _truncate_sequence(self,
                            segments: List[torch.Tensor],
@@ -137,6 +428,178 @@ class LLMGenerationManager:
         else:
             # If even the fixed segments exceed max_len, truncate from the beginning
             return full_sequence[-max_len:]
+
+    def _concatenate_and_truncate(self,
+                                   components: List[torch.Tensor],
+                                   truncation_segments: List[torch.Tensor] = None,
+                                   truncatable_index: int = 0,
+                                   max_len: int = None,
+                                   keep_end: bool = True,
+                                   debug: bool = False,
+                                   debug_label: str = "Prompt",
+                                   debug_info: Dict[str, Any] = None,
+                                   print_char_limit: int = 6000) -> torch.Tensor:
+        """
+        Concatenate components and truncate if needed, with optional debug printing.
+
+        Args:
+            components: List of tensor components to concatenate
+            truncation_segments: Segments to pass to _truncate_sequence (defaults to components if None)
+            truncatable_index: Index of the segment to truncate in truncation_segments
+            max_len: Maximum allowed length (if None, no truncation is performed)
+            keep_end: If True, keep end of truncatable segment
+            debug: If True, print debug info before and after truncation
+            debug_label: Label for debug prints (e.g., "Transfer Learning Prompt")
+            debug_info: Optional dict of additional debug info to print
+            print_char_limit: Character limit for decoded prompt printing
+
+        Returns:
+            Concatenated and possibly truncated tensor
+        """
+        # Use components as truncation_segments if not specified
+        if truncation_segments is None:
+            truncation_segments = components
+
+        # Concatenate all components
+        full_prompt = torch.cat(components, dim=0)
+
+        # Debug: Print before truncation
+        if debug:
+            print(f"\n{'='*80}")
+            print(f"DEBUG: {debug_label} Structure (BEFORE truncation)")
+            print(f"{'='*80}")
+            print(f"Full prompt length: {len(full_prompt)} tokens")
+            if debug_info:
+                for key, value in debug_info.items():
+                    print(f"{key}: {value}")
+
+            # Decode and print the full prompt
+            full_prompt_decoded = self.tokenizer.decode(full_prompt, skip_special_tokens=True)
+            print(f"\nFull prompt content (first {print_char_limit} chars):")
+            print(f"{'-'*80}")
+            print(full_prompt_decoded[:print_char_limit])
+            print(f"{'-'*80}\n")
+
+        # Truncate if too long
+        if max_len is not None and len(full_prompt) > max_len:
+            full_prompt = self._truncate_sequence(
+                segments=truncation_segments,
+                truncatable_index=truncatable_index,
+                max_len=max_len,
+                keep_end=keep_end
+            )
+
+            # Debug: Print after truncation
+            if debug:
+                print(f"\n{'='*80}")
+                print(f"DEBUG: {debug_label} Structure (AFTER truncation)")
+                print(f"{'='*80}")
+                print(f"Truncated prompt length: {len(full_prompt)} tokens (max: {max_len})")
+                truncated_decoded = self.tokenizer.decode(full_prompt, skip_special_tokens=True)
+                print(f"\nTruncated prompt content (first {print_char_limit} chars):")
+                print(f"{'-'*80}")
+                print(truncated_decoded[:print_char_limit])
+                print(f"{'-'*80}\n")
+
+        return full_prompt
+
+    def _replace_prompts_with_original(self, output: DataProto,
+                                        original_prompt_ids_list: List[torch.Tensor]) -> None:
+        """
+        Replace extended prompts with original prompts for correct KL divergence computation.
+
+        When generating with extended context (e.g., revision or transfer learning),
+        the actual generation prompt includes additional context. However, for KL divergence
+        computation during training, we need the prompts to match the original prompts.
+
+        This method:
+        1. Pads original prompts to the same length
+        2. Replaces the 'prompts' field with original prompts
+        3. Rebuilds 'input_ids' as original_prompts + responses
+        4. Rebuilds 'attention_mask', 'info_mask', and 'position_ids' accordingly
+
+        Args:
+            output: DataProto to modify (modified in-place)
+            original_prompt_ids_list: List of original prompt tensors
+        """
+        # Pad original prompts to same length
+        original_prompts_padded_list = []
+        max_original_prompt_len = max(len(p) for p in original_prompt_ids_list)
+        for original_prompt_ids in original_prompt_ids_list:
+            padded = torch.cat([
+                torch.full((max_original_prompt_len - len(original_prompt_ids),),
+                          self.tokenizer.pad_token_id,
+                          dtype=original_prompt_ids.dtype,
+                          device=original_prompt_ids.device),
+                original_prompt_ids
+            ])
+            original_prompts_padded_list.append(padded)
+
+        original_prompts_tensor = torch.stack(original_prompts_padded_list)
+
+        # Replace prompts and rebuild tensors
+        output.batch['prompts'] = original_prompts_tensor
+        output.batch['input_ids'] = torch.cat([
+            original_prompts_tensor,
+            output.batch['responses']
+        ], dim=1)
+
+        output.batch['attention_mask'] = torch.cat([
+            self.tensor_fn.create_attention_mask(original_prompts_tensor),
+            self.tensor_fn.create_attention_mask(output.batch['responses'])
+        ], dim=1)
+
+        output.batch['info_mask'] = torch.cat([
+            self.tensor_fn.create_attention_mask(original_prompts_tensor),
+            self.tensor_fn.create_attention_mask(output.batch['responses_with_info_mask'])
+        ], dim=1)
+
+        output.batch['position_ids'] = self.tensor_fn.create_position_ids(
+            output.batch['attention_mask']
+        )
+
+    def _create_padded_batch(self, input_ids_list: List[torch.Tensor],
+                              max_len: int = None) -> DataProto:
+        """
+        Pad a list of input_ids tensors to same length and create a DataProto batch.
+
+        This is a common pattern used in revision and transfer learning where we need to:
+        1. Pad variable-length input sequences to the same length
+        2. Optionally truncate to max_len (keeping the end)
+        3. Create attention mask and position ids
+        4. Package into a DataProto batch
+
+        Args:
+            input_ids_list: List of 1D tensors containing input token ids
+            max_len: Optional maximum length. If provided and sequences exceed this,
+                     truncate from the beginning (keep the end)
+
+        Returns:
+            DataProto with 'input_ids', 'attention_mask', and 'position_ids'
+        """
+        # Pad to same length
+        max_seq_len = max(len(ids) for ids in input_ids_list)
+        input_ids = torch.stack([
+            torch.cat([
+                torch.full((max_seq_len - len(ids),), self.tokenizer.pad_token_id, dtype=ids.dtype),
+                ids
+            ]) for ids in input_ids_list
+        ])
+
+        # Truncate to max_len if specified (keep the end)
+        if max_len is not None and input_ids.shape[1] > max_len:
+            input_ids = input_ids[:, -max_len:]
+
+        # Create attention mask and position ids
+        attention_mask = self.tensor_fn.create_attention_mask(input_ids)
+        position_ids = self.tensor_fn.create_position_ids(attention_mask)
+
+        # Create batch
+        return DataProto.from_dict({
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'position_ids': position_ids
+        })
 
     def _filter_text_for_display(self, text: str) -> str:
         """
@@ -197,11 +660,8 @@ class LLMGenerationManager:
             context_parts.append(f"Epoch {self.current_epoch}")
         if self.current_batch_idx is not None:
             context_parts.append(f"Batch {self.current_batch_idx}")
-        if self.current_revision_round is not None:
-            if self.current_revision_round == 0:
-                context_parts.append("Round 0 (Initial)")
-            else:
-                context_parts.append(f"Round {self.current_revision_round} (Revision)")
+        if self.current_phase is not None:
+            context_parts.append(f"Phase: {self.current_phase}")
 
         if context_parts:
             title_with_context = f"[{' | '.join(context_parts)}] {title}"
@@ -339,6 +799,21 @@ class LLMGenerationManager:
 
         print("="*80 + "\n")
 
+    def _debug_print_batch(self, batch: DataProto, is_input: bool = True) -> DataProto:
+        """Print debug batch if debug_llm_io is enabled. Returns batch unchanged."""
+        if self.config.debug_llm_io:
+            label = "INPUT" if is_input else "OUTPUT"
+            key = 'input_ids' if is_input else 'responses'
+            print("\n" + "="*80)
+            print(f"[DEBUG LLM IO] {label} _generate_with_gpu_padding:")
+            print(f"Phase: {self.current_phase}, Shape: {batch.batch[key].shape}")
+            print("="*80)
+            for i in range(min(4, batch.batch[key].shape[0])):  # Print first 4 samples
+                decoded = self.tokenizer.decode(batch.batch[key][i], skip_special_tokens=False)
+                print(f"\n[{label} {i} - Length: {len(batch.batch[key][i])} tokens]:\n{decoded}")
+            print("="*80 + "\n")
+        return batch
+
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:
         """Tokenize a batch of responses."""
         return self.tokenizer(
@@ -472,6 +947,8 @@ class LLMGenerationManager:
             if active_batch size is not divisible by num_gpus, pad with first sequence
             then remove padding from output
         """
+        self._debug_print_batch(active_batch, is_input=True)
+
         num_gpus = self.config.num_gpus
 
         # Ensure all tensors are long type
@@ -479,13 +956,15 @@ class LLMGenerationManager:
             active_batch.batch[key] = active_batch.batch[key].long()
 
         if num_gpus <= 1:
-            return self.actor_rollout_wg.generate_sequences(active_batch)
+            output = self.actor_rollout_wg.generate_sequences(active_batch)
+            return self._debug_print_batch(output, is_input=False)
 
         batch_size = active_batch.batch['input_ids'].shape[0]
         remainder = batch_size % num_gpus
 
         if remainder == 0:
-            return self.actor_rollout_wg.generate_sequences(active_batch)
+            output = self.actor_rollout_wg.generate_sequences(active_batch)
+            return self._debug_print_batch(output, is_input=False)
         
         # Add padding sequences
         padding_size = num_gpus - remainder
@@ -521,7 +1000,7 @@ class LLMGenerationManager:
             padded_output.meta_info = trimmed_meta
             
         padded_output.batch = trimmed_batch
-        return padded_output
+        return self._debug_print_batch(padded_output, is_input=False)
 
     def run_llm_loop(self, gen_batch, initial_input_ids: torch.Tensor) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
@@ -563,35 +1042,14 @@ class LLMGenerationManager:
                 keys=['input_ids', 'attention_mask', 'position_ids']
             )
 
-            # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
             rollings_active = DataProto.from_dict({
                 k: v[active_mask] for k, v in rollings.batch.items()
             })
 
-            # Print rollings_active (input prompts) in readable string format
-            # print("\n" + "="*80)
-            # print(f"ROLLINGS_ACTIVE (STEP {step}) - INPUT TO LLM (FULL CONTEXT):")
-            # print(f"Shape: {rollings_active.batch['input_ids'].shape}")
-            # print("="*80)
-            # # for i in range(rollings_active.batch['input_ids'].shape[0]):
-            # i = rollings_active.batch['input_ids'].shape[0] - 1
-            # decoded_input = self.tokenizer.decode(rollings_active.batch['input_ids'][i], skip_special_tokens=False)
-            # print(f"\n[Input {i} - Length: {len(rollings_active.batch['input_ids'][i])} tokens]:\n{decoded_input}")
-            # print("="*80 + "\n")
-
+            llm_start_time = time.time()
             gen_output = self._generate_with_gpu_padding(rollings_active)
-
-            # Print gen_output (generated responses) in readable string format
-            # print("\n" + "="*80)
-            # print(f"GEN_OUTPUT (STEP {step}) - LLM GENERATED RESPONSES (NEW TOKENS ONLY):")
-            # print(f"Shape: {gen_output.batch['responses'].shape}")
-            # print("="*80)
-            # # for i in range(gen_output.batch['responses'].shape[0]):
-            # i = gen_output.batch['responses'].shape[0] - 1
-            # decoded_response = self.tokenizer.decode(gen_output.batch['responses'][i], skip_special_tokens=False)
-            # print(f"\n[Response {i} - Length: {len(gen_output.batch['responses'][i])} tokens]:\n{decoded_response}")
-            # print("="*80 + "\n")
-            # import pdb; pdb.set_trace()
+            llm_elapsed = time.time() - llm_start_time
+            print(f"[Step {step}] LLM generation time: {llm_elapsed:.2f}s")
             
             meta_info = gen_output.meta_info
             # Example
@@ -708,9 +1166,13 @@ class LLMGenerationManager:
             # search_results_per_sample = ['[search results]', '', '']
 
 
+            search_start_time = time.time()
             next_obs, dones, valid_action, is_search, search_queries, search_results = self.execute_predictions(
                 responses_str, self.tokenizer.pad_token, active_mask
             )
+            search_elapsed = time.time() - search_start_time
+            num_searches = sum(is_search)
+            print(f"[Step {step}] Search engine time: {search_elapsed:.2f}s ({num_searches} searches)")
 
             # import pdb; pdb.set_trace()
 
@@ -806,7 +1268,10 @@ class LLMGenerationManager:
             #     print(f"\n[Input {i} - Length: {len(rollings_active.batch['input_ids'][i])} tokens]:\n{decoded_input}")
             # print("="*80 + "\n")
 
+            llm_start_time = time.time()
             gen_output = self._generate_with_gpu_padding(rollings_active)
+            llm_elapsed = time.time() - llm_start_time
+            print(f"[Final rollout] LLM generation time: {llm_elapsed:.2f}s")
 
             # Print gen_output (generated responses) in readable string format
             # print("\n" + "="*80)
@@ -910,6 +1375,464 @@ class LLMGenerationManager:
         queries = re.findall(pattern, response_text, re.DOTALL)
         return [q.strip() for q in queries]
 
+    def _perform_revision(self, gen_batch: DataProto,
+                          initial_output: DataProto) -> DataProto:
+        """
+        Perform self-revision on the initial output.
+
+        If two_step_revision is enabled:
+            Step 1: Ask LLM to analyze the initial response
+            Step 2: Add analysis to prompt and ask LLM to generate revised response
+        Otherwise:
+            Single step: Ask LLM to directly generate revised response
+
+        Args:
+            gen_batch: Original generation batch
+            initial_output: Initial output to revise
+
+        Returns:
+            Revised DataProto output
+        """
+        
+
+        if self.config.two_step_revision:
+            # ==================== TWO-STEP REVISION ====================
+            # Step 1: Generate analysis of the initial response
+            self.current_phase = 'analysis'
+            analysis_responses = self._generate_analysis(initial_output)
+
+            # Step 2: Generate revised response based on analysis
+            self.current_phase = 'revision'
+            revision_output = self._generate_revision_with_analysis(
+                gen_batch, initial_output, analysis_responses
+            )
+        else:
+            # ==================== SINGLE-STEP REVISION (original behavior) ====================
+            self.current_phase = 'revision'
+            revision_output = self._generate_revision_single_step(gen_batch, initial_output)
+
+        # Extract original prompts for KL divergence computation
+        original_prompt_ids_list = [initial_output.batch['prompts'][i]
+                                    for i in range(initial_output.batch['prompts'].shape[0])]
+
+        # Replace extended prompts with original prompts for KL divergence computation
+        self._replace_prompts_with_original(revision_output, original_prompt_ids_list)
+
+        # Add revision metadata
+        revision_output.meta_info['is_revision'] = True
+        revision_output.meta_info['generation_type'] = 'revision'
+
+        return revision_output
+
+    def _generate_analysis(self, initial_output: DataProto) -> List[torch.Tensor]:
+        """
+        Step 1 of two-step revision: Generate analysis of the initial response.
+
+        Args:
+            initial_output: Initial output containing responses to analyze
+
+        Returns:
+            List of analysis response tensors for each sample
+        """
+        batch_size = initial_output.batch['responses'].shape[0]
+        analysis_input_ids_list = []
+
+        for i in range(batch_size):
+            # Strip special tokens from original_prompt to avoid repeated <endoftext> tokens
+            original_prompt_ids = self._strip_special_tokens(initial_output.batch['prompts'][i])
+            previous_response_ids = self._strip_special_tokens(initial_output.batch['responses'][i])
+
+            # Encode instructions for analysis step (use specific analysis instruction)
+            top_instruction_ids = self.tokenizer.encode(
+                self.config.top_instruction_for_analysis,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            previous_response_instruction_ids = self.tokenizer.encode(
+                self.config.previous_response_instruction,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            analysis_instruction_ids = self.tokenizer.encode(
+                self.config.analysis_prompt,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            # Concatenate and truncate: original_prompt is also truncatable to ensure top_instruction is preserved
+            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, analysis_instruction]
+            # Priority: Keep top_instruction and analysis_instruction, truncate original_prompt from beginning if needed
+            full_analysis_input = self._concatenate_and_truncate(
+                components=[
+                    top_instruction_ids,
+                    original_prompt_ids,
+                    previous_response_instruction_ids,
+                    previous_response_ids,
+                    analysis_instruction_ids
+                ],
+                truncatable_index=1,  # Truncate original_prompt to preserve instructions
+                max_len=self.config.max_start_length,
+                keep_end=True  # Keep end of original_prompt (most recent part of question)
+            )
+
+            analysis_input_ids_list.append(full_analysis_input)
+
+        # Create padded batch for analysis generation (truncated to max_start_length for consistency)
+        analysis_batch = self._create_padded_batch(
+            analysis_input_ids_list,
+            max_len=self.config.max_start_length
+        )
+
+        # Generate analysis (single turn, no search needed)
+        print(f"\n{'='*80}")
+        print(f"STEP 1: Generating Analysis of Initial Response")
+        print(f"{'='*80}\n")
+
+        gen_output = self._generate_with_gpu_padding(analysis_batch)
+        analysis_responses = gen_output.batch['responses']
+
+        # Print analysis output for debugging
+        self.print_readable_dataproto(
+            {'prompts': analysis_batch.batch['input_ids'], 'responses': analysis_responses},
+            title="Analysis Step Output",
+            sample_indices=[0, 1, 2, 3]
+        )
+
+        return analysis_responses
+
+    def _generate_revision_with_analysis(self, gen_batch: DataProto,
+                                          initial_output: DataProto,
+                                          analysis_responses: torch.Tensor) -> DataProto:
+        """
+        Step 2 of two-step revision: Generate revised response based on analysis.
+
+        Args:
+            gen_batch: Original generation batch
+            initial_output: Initial output containing responses to revise
+            analysis_responses: Analysis responses from step 1
+
+        Returns:
+            Revised DataProto output
+        """
+        batch_size = initial_output.batch['responses'].shape[0]
+        revision_input_ids_list = []
+
+        for i in range(batch_size):
+            # Strip special tokens from original_prompt to avoid repeated <endoftext> tokens
+            original_prompt_ids = self._strip_special_tokens(initial_output.batch['prompts'][i])
+            previous_response_ids = self._strip_special_tokens(initial_output.batch['responses'][i])
+            analysis_ids = self._strip_special_tokens(analysis_responses[i])
+
+            # Encode instructions
+            top_instruction_ids = self.tokenizer.encode(
+                self.config.top_instruction,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            previous_response_instruction_ids = self.tokenizer.encode(
+                self.config.previous_response_instruction,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            # Use analysis_label instead of analysis_prompt since analysis is already generated
+            analysis_label_ids = self.tokenizer.encode(
+                self.config.analysis_label,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            question_reminder_ids = self.tokenizer.encode(
+                self.config.question_reminder,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            revision_instruction_ids = self.tokenizer.encode(
+                self.config.revision_after_analysis_prompt,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            # Concatenate and truncate: original_prompt is truncatable to preserve instructions
+            # Segments: [top_instruction, original_prompt, previous_response_instruction,
+            #            previous_response, analysis_label, analysis, question_reminder, original_prompt (repeated), revision_instruction]
+            # Priority: Keep top_instruction, question_reminder, and revision_instruction, truncate first original_prompt if needed
+            full_revision_input = self._concatenate_and_truncate(
+                components=[
+                    top_instruction_ids,
+                    original_prompt_ids,
+                    previous_response_instruction_ids,
+                    previous_response_ids,
+                    analysis_label_ids,
+                    analysis_ids,
+                    question_reminder_ids,
+                    original_prompt_ids,  # Repeat the question at the end as a reminder
+                    revision_instruction_ids
+                ],
+                truncatable_index=1,  # Truncate first original_prompt to preserve instructions and question reminder
+                max_len=self.config.max_start_length,
+                keep_end=True  # Keep end of first original_prompt (most recent part)
+            )
+
+            revision_input_ids_list.append(full_revision_input)
+
+        # Create padded batch for revision (truncated to max_start_length for consistency)
+        revision_gen_batch = self._create_padded_batch(
+            revision_input_ids_list,
+            max_len=self.config.max_start_length
+        )
+
+        # Copy meta_info from original
+        revision_gen_batch.meta_info.update(gen_batch.meta_info)
+
+        # Run LLM loop for this revision
+        print(f"\n{'='*80}")
+        print(f"STEP 2: Generating Revised Response Based on Analysis")
+        print(f"{'='*80}\n")
+
+        revision_output = self.run_llm_loop(revision_gen_batch, revision_gen_batch.batch['input_ids'])
+
+        # Print ACTUAL revision prompt that was used for generation
+        self.print_readable_dataproto(
+            {'prompts': revision_output.batch['prompts'], 'responses': revision_output.batch['responses']},
+            title="Revision Output (Two-Step: After Analysis)",
+            sample_indices=[0, 1, 2, 3]
+        )
+
+        return revision_output
+
+    def _generate_revision_single_step(self, gen_batch: DataProto,
+                                        initial_output: DataProto) -> DataProto:
+        """
+        Original single-step revision: Directly generate revised response.
+
+        Args:
+            gen_batch: Original generation batch
+            initial_output: Initial output containing responses to revise
+
+        Returns:
+            Revised DataProto output
+        """
+        batch_size = initial_output.batch['responses'].shape[0]
+        revision_input_ids_list = []
+
+        for i in range(batch_size):
+            # Strip special tokens from original_prompt to avoid repeated <endoftext> tokens
+            original_prompt_ids = self._strip_special_tokens(initial_output.batch['prompts'][i])
+            previous_response_ids = self._strip_special_tokens(initial_output.batch['responses'][i])
+
+            # Encode instructions
+            previous_response_instruction_ids = self.tokenizer.encode(
+                self.config.previous_response_instruction,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            top_instruction_ids = self.tokenizer.encode(
+                self.config.top_instruction_for_revision_single_step,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            question_reminder_ids = self.tokenizer.encode(
+                self.config.question_reminder,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            revision_instruction_ids = self.tokenizer.encode(
+                self.config.revision_prompt,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            # Concatenate and truncate: original_prompt is truncatable to preserve instructions
+            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, question_reminder, original_prompt (repeated), revision_instruction]
+            # Priority: Keep top_instruction, question_reminder, and revision_instruction, truncate first original_prompt if needed
+            full_revision_input = self._concatenate_and_truncate(
+                components=[
+                    top_instruction_ids,
+                    original_prompt_ids,
+                    previous_response_instruction_ids,
+                    previous_response_ids,
+                    question_reminder_ids,
+                    original_prompt_ids,  # Repeat the question at the end as a reminder
+                    revision_instruction_ids
+                ],
+                truncatable_index=1,  # Truncate first original_prompt to preserve instructions and question reminder
+                max_len=self.config.max_start_length,
+                keep_end=True  # Keep end of first original_prompt (most recent part)
+            )
+
+            revision_input_ids_list.append(full_revision_input)
+
+        # Create padded batch for revision (truncated to max_start_length for consistency)
+        revision_gen_batch = self._create_padded_batch(
+            revision_input_ids_list,
+            max_len=self.config.max_start_length
+        )
+
+        # Copy meta_info from original
+        revision_gen_batch.meta_info.update(gen_batch.meta_info)
+
+        # Run LLM loop for this revision
+        revision_output = self.run_llm_loop(revision_gen_batch, revision_gen_batch.batch['input_ids'])
+
+        # Print ACTUAL revision prompt that was used for generation
+        self.print_readable_dataproto(
+            {'prompts': revision_output.batch['prompts'], 'responses': revision_output.batch['responses']},
+            title="Revision Output (Single-Step)",
+            sample_indices=[0, 1, 2, 3]
+        )
+
+        return revision_output
+
+    def _perform_transfer_learning(self, gen_batch: DataProto,
+                                   current_output: DataProto,
+                                   n_agent: int = 1) -> DataProto:
+        """
+        Perform transfer learning by creating prompts that include all previous thinking processes
+        from the same original prompt (grouped by n_agent repetitions).
+
+        The batch is structured as: [P0, P0, ..., P1, P1, ...] where each prompt is repeated n_agent times.
+        For transfer learning, we group responses by their original prompt and use all of them.
+
+        Args:
+            gen_batch: Original generation batch containing the original prompts
+            current_output: Current output containing all previous responses
+            n_agent: Number of agents (repetitions) per original prompt
+
+        Returns:
+            New output from transfer learning generation (one response per n_agent group)
+        """
+        batch_size = current_output.batch['responses'].shape[0]
+        num_unique_prompts = batch_size // n_agent
+
+        print(f"\n{'='*80}")
+        print("TRANSFER LEARNING - Creating prompts with all previous thinking processes")
+        print(f"{'='*80}")
+        print(f"Batch size: {batch_size}")
+        print(f"n_agent: {n_agent}")
+        print(f"Number of unique prompts: {num_unique_prompts}")
+        print(f"Responses per prompt: {n_agent}")
+        print()
+
+        # Create transfer learning prompts for each unique prompt (not per sample)
+        transfer_input_ids_list = []
+        original_prompt_ids_list = []  # Store original prompts to preserve for KL computation
+        for prompt_idx in range(num_unique_prompts):
+            # Calculate indices for this prompt group
+            start_idx = prompt_idx * n_agent
+            end_idx = start_idx + n_agent
+
+            # Get original prompt (should be same for all in group)
+            original_prompt_ids = current_output.batch['prompts'][start_idx]
+            original_prompt_ids_list.append(original_prompt_ids)  # Save for later
+
+            # Collect all prompts and responses for this prompt group
+            all_prompts_for_group = []
+            all_responses_for_prompt = []
+            for agent_idx in range(start_idx, end_idx):
+                prompt_ids = current_output.batch['prompts'][agent_idx]
+                response_ids = current_output.batch['responses'][agent_idx]
+                all_prompts_for_group.append(prompt_ids)
+                all_responses_for_prompt.append(response_ids)
+
+            # # Print debug info for ALL prompts (not just first)
+            # print(f"\n{'='*80}")
+            # print(f"PROMPT-RESPONSE MATCHING VERIFICATION (Prompt Group {prompt_idx})")
+            # print(f"{'='*80}\n")
+
+            # # Print all prompts in this group to verify they are identical
+            # print(f"ALL PROMPTS IN THIS GROUP ({len(all_prompts_for_group)} prompts, should be identical):")
+            # print(f"{'-'*80}\n")
+            # for i, prompt in enumerate(all_prompts_for_group):
+            #     prompt_decoded = self.tokenizer.decode(prompt, skip_special_tokens=True)
+            #     prompt_filtered = self._filter_text_for_display(prompt_decoded)
+            #     prompt_lines = prompt_filtered.split('\n')
+
+            #     print(f"Prompt {i} ({(prompt != self.tokenizer.pad_token_id).sum().item()} tokens, {len(prompt_lines)} lines):")
+            #     print(f"{'-'*80}")
+            #     print(prompt_filtered)  # Print entire text without truncation
+            #     print(f"\n{'-'*80}\n")
+
+            # print(f"{'='*80}\n")
+
+            # # Print all responses
+            # print(f"ALL RESPONSES FOR THIS PROMPT GROUP ({len(all_responses_for_prompt)} responses):")
+            # print(f"{'-'*80}\n")
+            # for i, resp in enumerate(all_responses_for_prompt):
+            #     resp_decoded = self.tokenizer.decode(resp, skip_special_tokens=True)
+            #     resp_filtered = self._filter_text_for_display(resp_decoded)
+            #     resp_lines = resp_filtered.split('\n')
+
+            #     print(f"Response {i} ({(resp != self.tokenizer.pad_token_id).sum().item()} tokens, {len(resp_lines)} lines):")
+            #     print(resp_filtered)  # Print entire text without truncation
+            #     print(f"\n{'-'*80}\n")
+
+            # print(f"{'='*80}\n")
+
+            # if prompt_idx == 0:  # Only pause at first prompt group for interactive debugging
+            #     import pdb; pdb.set_trace()
+
+            # Create transfer learning prompt using ALL responses from this prompt
+            transfer_prompt_ids = self._create_transfer_learning_prompt(
+                original_prompt_ids,
+                all_responses_for_prompt
+            )
+
+            # if prompt_idx == 0:
+            #     print(f"  - Transfer prompt length: {len(transfer_prompt_ids)} tokens")
+            #     print()
+
+            transfer_input_ids_list.append(transfer_prompt_ids)
+
+        # Create padded batch for transfer learning (truncated to max_start_length for consistency)
+        transfer_gen_batch = self._create_padded_batch(
+            transfer_input_ids_list,
+            max_len=self.config.max_start_length
+        )
+
+        # Copy meta_info from original
+        transfer_gen_batch.meta_info.update(gen_batch.meta_info)
+
+        # Note: UIDs are not available at generation time - they're added later in ray_trainer.py
+        # The UID handling happens after generation when batches are merged in the training pipeline
+
+        # Run LLM loop for transfer learning
+        print(f"\n{'='*80}")
+        print("TRANSFER LEARNING - Generating new thinking process")
+        print(f"{'='*80}\n")
+
+        self.current_phase = 'transfer'
+        transfer_output = self.run_llm_loop(transfer_gen_batch, transfer_gen_batch.batch['input_ids'])
+
+        # Print ACTUAL transfer learning prompt that was used for generation (before replacement)
+        self.print_readable_dataproto(
+            {'prompts': transfer_output.batch['prompts'], 'responses': transfer_output.batch['responses']},
+            title=f"Transfer Learning Output (ACTUAL prompts used for generation - includes all previous responses + instruction)",
+            sample_indices=[0,1,2]  # Print first sample
+        )
+
+        # Replace extended prompts with original prompts for correct KL divergence computation
+        self._replace_prompts_with_original(transfer_output, original_prompt_ids_list)
+
+        # Add metadata
+        transfer_output.meta_info['is_transfer_learning'] = True
+
+        # # Print transfer learning output in readable format
+        # self.print_readable_dataproto(
+        #     {'prompts': transfer_output.batch['prompts'], 'responses': transfer_output.batch['responses']},
+        #     title=f"Transfer Learning Output (with original prompt restored)",
+        #     sample_indices=[0]  # Print first sample
+        # )
+
+        return transfer_output
+
     def _create_transfer_learning_prompt(self, original_prompt_ids: torch.Tensor,
                                         all_responses: List[torch.Tensor]) -> torch.Tensor:
         """
@@ -922,8 +1845,11 @@ class LLMGenerationManager:
         Returns:
             Combined prompt for transfer learning
         """
-        # Start with original prompt
-        components = [original_prompt_ids]
+        # Strip special tokens from original prompt to avoid repeated <endoftext> tokens
+        original_prompt_ids_clean = self._strip_special_tokens(original_prompt_ids)
+
+        # Start with cleaned original prompt
+        components = [original_prompt_ids_clean]
 
         # Add all previous thinking processes with instruction before each
         for idx, response_ids in enumerate(all_responses, 1):
@@ -934,7 +1860,7 @@ class LLMGenerationManager:
                 return_tensors='pt'
             ).squeeze(0)
             components.append(response_instruction_ids)
-            components.append(response_ids)
+            components.append(self._strip_special_tokens(response_ids))
 
         # Add transfer learning instruction
         transfer_instruction_ids = self.tokenizer.encode(
@@ -944,482 +1870,29 @@ class LLMGenerationManager:
         ).squeeze(0)
         components.append(transfer_instruction_ids)
 
-        # Concatenate all components
-        full_prompt = torch.cat(components, dim=0)
+        # Prepare truncation segments: [original_prompt, all_responses_concat, transfer_instruction]
+        response_components = components[1:-1]  # All response instructions + responses
+        all_responses_concat = torch.cat(response_components, dim=0) if response_components else torch.tensor([], dtype=original_prompt_ids_clean.dtype)
 
-        # Debug: Print the full prompt to verify structure
-        print(f"\n{'='*80}")
-        print(f"DEBUG: Transfer Learning Prompt Structure (BEFORE truncation)")
-        print(f"{'='*80}")
-        print(f"Full prompt length: {len(full_prompt)} tokens")
-        print(f"Original prompt length: {len(original_prompt_ids)} tokens")
-        print(f"Number of responses: {len(all_responses)}")
-        print(f"Transfer instruction length: {len(transfer_instruction_ids)} tokens")
-
-        # Decode and print the full prompt
-        full_prompt_decoded = self.tokenizer.decode(full_prompt, skip_special_tokens=True)
-        print(f"\nFull prompt content (first 6000 chars):")
-        print(f"{'-'*80}")
-        print(full_prompt_decoded[:6000])
-        print(f"{'-'*80}\n")
-
-        # Truncate if too long
-        # Use extended max length: original_prompt + n_agent * (instruction + response) + transfer_instruction
-        # A factor of (n_agent + 1) should provide enough room
-        max_len = self.config.max_start_length
-        if len(full_prompt) > max_len:
-            # Concatenate all middle response components for truncation
-            response_components = components[1:-1]  # All response instructions + responses
-            all_responses_concat = torch.cat(response_components, dim=0)
-
-            # Truncate: [original_prompt, all_responses, transfer_instruction] with all_responses truncatable
-            full_prompt = self._truncate_sequence(
-                segments=[original_prompt_ids, all_responses_concat, transfer_instruction_ids],
-                truncatable_index=1,  # Truncate the middle (responses)
-                max_len=max_len,
-                keep_end=True  # Keep most recent responses
-            )
-
-            # Debug: Print the truncated prompt
-            print(f"\n{'='*80}")
-            print(f"DEBUG: Transfer Learning Prompt Structure (AFTER truncation)")
-            print(f"{'='*80}")
-            print(f"Truncated prompt length: {len(full_prompt)} tokens (max: {max_len})")
-            truncated_decoded = self.tokenizer.decode(full_prompt, skip_special_tokens=True)
-            print(f"\nTruncated prompt content (first 6000 chars):")
-            print(f"{'-'*80}")
-            print(truncated_decoded[:6000])
-            print(f"{'-'*80}\n")
+        # Use helper to concatenate, debug print, and truncate
+        # Note: We make original_prompt_ids_clean truncatable (index 0) to preserve transfer_instruction
+        full_prompt = self._concatenate_and_truncate(
+            components=components,
+            truncation_segments=[original_prompt_ids_clean, all_responses_concat, transfer_instruction_ids],
+            truncatable_index=0,  # Truncate original_prompt to preserve transfer_instruction
+            max_len=self.config.max_start_length,
+            keep_end=True,  # Keep end of original_prompt (most recent part)
+            debug=True,
+            debug_label="Transfer Learning Prompt",
+            debug_info={
+                "Original prompt length": f"{len(original_prompt_ids_clean)} tokens",
+                "Number of responses": len(all_responses),
+                "Transfer instruction length": f"{len(transfer_instruction_ids)} tokens"
+            },
+            print_char_limit=6000
+        )
 
         return full_prompt
-
-    def _perform_single_revision(self, gen_batch: DataProto,
-                                 current_output: DataProto,
-                                 revision_round: int) -> DataProto:
-        """
-        Perform a single round of revision on the current output.
-
-        If two_step_revision is enabled:
-            Step 1: Ask LLM to analyze the initial response
-            Step 2: Add analysis to prompt and ask LLM to generate revised response
-        Otherwise:
-            Single step: Ask LLM to directly generate revised response
-
-        Args:
-            gen_batch: Original generation batch
-            current_output: Current output to revise
-            revision_round: The revision round number (1-based)
-
-        Returns:
-            Revised DataProto output
-        """
-
-        batch_size = current_output.batch['responses'].shape[0]
-        original_prompt_ids_list = []  # Store original prompts to preserve for KL computation
-
-        # Collect original prompts
-        for i in range(batch_size):
-            original_prompt_ids = current_output.batch['prompts'][i]
-            original_prompt_ids_list.append(original_prompt_ids)
-
-        if self.config.two_step_revision:
-            # ==================== TWO-STEP REVISION ====================
-            # Step 1: Generate analysis of the initial response
-            analysis_responses = self._generate_analysis(current_output, original_prompt_ids_list)
-
-            # Step 2: Generate revised response based on analysis
-            revision_output = self._generate_revision_with_analysis(
-                gen_batch, current_output, original_prompt_ids_list, analysis_responses, revision_round
-            )
-        else:
-            # ==================== SINGLE-STEP REVISION (original behavior) ====================
-            revision_output = self._generate_revision_single_step(
-                gen_batch, current_output, original_prompt_ids_list, revision_round
-            )
-
-        # Replace extended prompts with original prompts for KL divergence computation
-        original_prompts_padded_list = []
-        max_original_prompt_len = max(len(p) for p in original_prompt_ids_list)
-        for original_prompt_ids in original_prompt_ids_list:
-            padded = torch.cat([
-                torch.full((max_original_prompt_len - len(original_prompt_ids),),
-                          self.tokenizer.pad_token_id,
-                          dtype=original_prompt_ids.dtype,
-                          device=original_prompt_ids.device),
-                original_prompt_ids
-            ])
-            original_prompts_padded_list.append(padded)
-
-        original_prompts_tensor = torch.stack(original_prompts_padded_list)
-
-        # Replace prompts and rebuild tensors
-        revision_output.batch['prompts'] = original_prompts_tensor
-        revision_output.batch['input_ids'] = torch.cat([
-            original_prompts_tensor,
-            revision_output.batch['responses']
-        ], dim=1)
-
-        revision_output.batch['attention_mask'] = torch.cat([
-            self.tensor_fn.create_attention_mask(original_prompts_tensor),
-            self.tensor_fn.create_attention_mask(revision_output.batch['responses'])
-        ], dim=1)
-
-        revision_output.batch['info_mask'] = torch.cat([
-            self.tensor_fn.create_attention_mask(original_prompts_tensor),
-            self.tensor_fn.create_attention_mask(revision_output.batch['responses_with_info_mask'])
-        ], dim=1)
-
-        revision_output.batch['position_ids'] = self.tensor_fn.create_position_ids(
-            revision_output.batch['attention_mask']
-        )
-
-        # Add revision metadata
-        revision_output.meta_info['revision_round'] = revision_round
-        revision_output.meta_info['generation_type'] = 'revision'
-
-        return revision_output
-
-    def _generate_analysis(self, current_output: DataProto,
-                           original_prompt_ids_list: List[torch.Tensor]) -> List[torch.Tensor]:
-        """
-        Step 1 of two-step revision: Generate analysis of the initial response.
-
-        Args:
-            current_output: Current output containing initial responses
-            original_prompt_ids_list: List of original prompt tensors
-
-        Returns:
-            List of analysis response tensors for each sample
-        """
-        batch_size = current_output.batch['responses'].shape[0]
-        analysis_input_ids_list = []
-
-        for i in range(batch_size):
-            original_prompt_ids = original_prompt_ids_list[i]
-            previous_response_ids = current_output.batch['responses'][i]
-
-            # Encode instructions for analysis step
-            top_instruction_ids = self.tokenizer.encode(
-                self.config.top_instruction,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            previous_response_instruction_ids = self.tokenizer.encode(
-                self.config.previous_response_instruction,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            analysis_instruction_ids = self.tokenizer.encode(
-                self.config.analysis_prompt,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            # Concatenate and truncate: previous_response is truncatable (index 3)
-            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, analysis_instruction]
-            full_analysis_input = self._truncate_sequence(
-                segments=[
-                    top_instruction_ids,
-                    original_prompt_ids,
-                    previous_response_instruction_ids,
-                    previous_response_ids,
-                    analysis_instruction_ids
-                ],
-                truncatable_index=3,  # Truncate previous_response
-                max_len=self.config.max_start_length,
-                keep_end=True  # Keep most recent context
-            )
-
-            analysis_input_ids_list.append(full_analysis_input)
-
-        # Pad to same length
-        max_seq_len = max(len(ids) for ids in analysis_input_ids_list)
-        analysis_input_ids = torch.stack([
-            torch.cat([
-                torch.full((max_seq_len - len(ids),), self.tokenizer.pad_token_id, dtype=ids.dtype),
-                ids
-            ]) for ids in analysis_input_ids_list
-        ])
-
-        # Create attention mask and position ids
-        analysis_attention_mask = self.tensor_fn.create_attention_mask(analysis_input_ids)
-        analysis_position_ids = self.tensor_fn.create_position_ids(analysis_attention_mask)
-
-        # Create batch for analysis generation
-        analysis_batch = DataProto.from_dict({
-            'input_ids': analysis_input_ids,
-            'attention_mask': analysis_attention_mask,
-            'position_ids': analysis_position_ids
-        })
-
-        # Generate analysis (single turn, no search needed)
-        print(f"\n{'='*80}")
-        print(f"STEP 1: Generating Analysis of Initial Response")
-        print(f"{'='*80}\n")
-
-        gen_output = self._generate_with_gpu_padding(analysis_batch)
-        analysis_responses = gen_output.batch['responses']
-
-        # Print analysis output for debugging
-        self.print_readable_dataproto(
-            {'prompts': analysis_input_ids, 'responses': analysis_responses},
-            title="Analysis Step Output",
-            sample_indices=[0, 1, 2, 3]
-        )
-
-        return analysis_responses
-
-    def _generate_revision_with_analysis(self, gen_batch: DataProto,
-                                          current_output: DataProto,
-                                          original_prompt_ids_list: List[torch.Tensor],
-                                          analysis_responses: torch.Tensor,
-                                          revision_round: int) -> DataProto:
-        """
-        Step 2 of two-step revision: Generate revised response based on analysis.
-
-        Args:
-            gen_batch: Original generation batch
-            current_output: Current output containing initial responses
-            original_prompt_ids_list: List of original prompt tensors
-            analysis_responses: Analysis responses from step 1
-            revision_round: The revision round number
-
-        Returns:
-            Revised DataProto output
-        """
-        batch_size = current_output.batch['responses'].shape[0]
-        revision_input_ids_list = []
-
-        for i in range(batch_size):
-            original_prompt_ids = original_prompt_ids_list[i]
-            previous_response_ids = current_output.batch['responses'][i]
-            analysis_ids = analysis_responses[i]
-
-            # Encode instructions
-            top_instruction_ids = self.tokenizer.encode(
-                self.config.top_instruction,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            previous_response_instruction_ids = self.tokenizer.encode(
-                self.config.previous_response_instruction,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            analysis_instruction_ids = self.tokenizer.encode(
-                self.config.analysis_prompt,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            revision_instruction_ids = self.tokenizer.encode(
-                self.config.revision_after_analysis_prompt,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            # Concatenate and truncate: previous_response is truncatable (index 3)
-            # Segments: [top_instruction, original_prompt, previous_response_instruction,
-            #            previous_response, analysis_instruction, analysis, revision_instruction]
-            full_revision_input = self._truncate_sequence(
-                segments=[
-                    top_instruction_ids,
-                    original_prompt_ids,
-                    previous_response_instruction_ids,
-                    previous_response_ids,
-                    analysis_instruction_ids,
-                    analysis_ids,
-                    revision_instruction_ids
-                ],
-                truncatable_index=3,  # Truncate previous_response
-                max_len=self.config.max_start_length,
-                keep_end=True  # Keep most recent context
-            )
-
-            revision_input_ids_list.append(full_revision_input)
-
-        # Pad to same length
-        max_seq_len = max(len(ids) for ids in revision_input_ids_list)
-        revision_input_ids = torch.stack([
-            torch.cat([
-                torch.full((max_seq_len - len(ids),), self.tokenizer.pad_token_id, dtype=ids.dtype),
-                ids
-            ]) for ids in revision_input_ids_list
-        ])
-
-        # Create attention mask and position ids
-        revision_attention_mask = self.tensor_fn.create_attention_mask(revision_input_ids)
-        revision_position_ids = self.tensor_fn.create_position_ids(revision_attention_mask)
-
-        # Create new gen_batch for revision
-        revision_gen_batch = DataProto.from_dict({
-            'input_ids': revision_input_ids,
-            'attention_mask': revision_attention_mask,
-            'position_ids': revision_position_ids
-        })
-
-        # Copy meta_info from original
-        revision_gen_batch.meta_info.update(gen_batch.meta_info)
-
-        # Get the initial input for this revision round
-        revision_initial_input_ids = revision_input_ids[:, -self.config.max_start_length:]
-
-        # Run LLM loop for this revision
-        print(f"\n{'='*80}")
-        print(f"STEP 2: Generating Revised Response Based on Analysis")
-        print(f"{'='*80}\n")
-
-        self.current_revision_round = revision_round
-        revision_output = self.run_llm_loop(revision_gen_batch, revision_initial_input_ids)
-
-        # Print ACTUAL revision prompt that was used for generation
-        self.print_readable_dataproto(
-            {'prompts': revision_output.batch['prompts'], 'responses': revision_output.batch['responses']},
-            title=f"Revision Output Round {revision_round} (Two-Step: After Analysis)",
-            sample_indices=[0, 1, 2, 3]
-        )
-
-        return revision_output
-
-    def _generate_revision_single_step(self, gen_batch: DataProto,
-                                        current_output: DataProto,
-                                        original_prompt_ids_list: List[torch.Tensor],
-                                        revision_round: int) -> DataProto:
-        """
-        Original single-step revision: Directly generate revised response.
-
-        Args:
-            gen_batch: Original generation batch
-            current_output: Current output containing initial responses
-            original_prompt_ids_list: List of original prompt tensors
-            revision_round: The revision round number
-
-        Returns:
-            Revised DataProto output
-        """
-        batch_size = current_output.batch['responses'].shape[0]
-        revision_input_ids_list = []
-
-        for i in range(batch_size):
-            original_prompt_ids = original_prompt_ids_list[i]
-            previous_response_ids = current_output.batch['responses'][i]
-
-            # Encode instructions
-            previous_response_instruction_ids = self.tokenizer.encode(
-                self.config.previous_response_instruction,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            top_instruction_ids = self.tokenizer.encode(
-                self.config.top_instruction,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            revision_instruction_ids = self.tokenizer.encode(
-                self.config.revision_prompt,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
-            # Concatenate and truncate: previous_response is truncatable (index 3)
-            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, revision_instruction]
-            full_revision_input = self._truncate_sequence(
-                segments=[
-                    top_instruction_ids,
-                    original_prompt_ids,
-                    previous_response_instruction_ids,
-                    previous_response_ids,
-                    revision_instruction_ids
-                ],
-                truncatable_index=3,  # Truncate previous_response
-                max_len=self.config.max_start_length,
-                keep_end=True  # Keep most recent context
-            )
-
-            revision_input_ids_list.append(full_revision_input)
-
-        # Pad to same length
-        max_seq_len = max(len(ids) for ids in revision_input_ids_list)
-        revision_input_ids = torch.stack([
-            torch.cat([
-                torch.full((max_seq_len - len(ids),), self.tokenizer.pad_token_id, dtype=ids.dtype),
-                ids
-            ]) for ids in revision_input_ids_list
-        ])
-
-        # Create attention mask and position ids
-        revision_attention_mask = self.tensor_fn.create_attention_mask(revision_input_ids)
-        revision_position_ids = self.tensor_fn.create_position_ids(revision_attention_mask)
-
-        # Create new gen_batch for revision
-        revision_gen_batch = DataProto.from_dict({
-            'input_ids': revision_input_ids,
-            'attention_mask': revision_attention_mask,
-            'position_ids': revision_position_ids
-        })
-
-        # Copy meta_info from original
-        revision_gen_batch.meta_info.update(gen_batch.meta_info)
-
-        # Get the initial input for this revision round
-        revision_initial_input_ids = revision_input_ids[:, -self.config.max_start_length:]
-
-        # Run LLM loop for this revision
-        self.current_revision_round = revision_round
-        revision_output = self.run_llm_loop(revision_gen_batch, revision_initial_input_ids)
-
-        # Print ACTUAL revision prompt that was used for generation
-        self.print_readable_dataproto(
-            {'prompts': revision_output.batch['prompts'], 'responses': revision_output.batch['responses']},
-            title=f"Revision Output Round {revision_round} (ACTUAL prompts used for generation)",
-            sample_indices=[0, 1, 2, 3]
-        )
-
-        return revision_output
-
-    def _apply_transfer_learning_and_merge(self, gen_batch: DataProto,
-                                           base_output: DataProto,
-                                           revision_round: int = 0) -> DataProto:
-        """
-        Apply transfer learning to base output and merge the results.
-
-        Args:
-            gen_batch: Original generation batch
-            base_output: Base output to use for transfer learning (can be original or revised)
-            revision_round: Current revision round number
-
-        Returns:
-            Merged DataProto containing both base and transfer outputs
-        """
-        print(f"\n{'='*80}")
-        print(f"TRANSFER LEARNING")
-        print(f"{'='*80}\n")
-
-        # Perform transfer learning
-        transfer_output = self._perform_transfer_learning(gen_batch, base_output, self.n_agent)
-        transfer_output.meta_info['revision_round'] = revision_round
-        transfer_output.meta_info['generation_type'] = 'transfer_learning'
-
-        # Merge base and transfer learning outputs
-        transfer_batch_size = transfer_output.batch['responses'].shape[0]
-        num_unique_prompts = transfer_batch_size
-        merged_output = self._merge_revision_and_transfer_outputs(
-            revision_output=base_output,
-            transfer_output=transfer_output,
-            num_unique_prompts=num_unique_prompts
-        )
-
-        print(f"\n{'='*80}")
-        print(f"TRANSFER LEARNING COMPLETED AND MERGED")
-        print(f"{'='*80}\n")
-
-        return merged_output
 
     def _merge_revision_and_transfer_outputs(self, revision_output: DataProto,
                                             transfer_output: DataProto,
@@ -1560,205 +2033,6 @@ class LLMGenerationManager:
 
         return merged_output
 
-    def _perform_transfer_learning(self, gen_batch: DataProto,
-                                   current_output: DataProto,
-                                   n_agent: int = 1) -> DataProto:
-        """
-        Perform transfer learning by creating prompts that include all previous thinking processes
-        from the same original prompt (grouped by n_agent repetitions).
-
-        The batch is structured as: [P0, P0, ..., P1, P1, ...] where each prompt is repeated n_agent times.
-        For transfer learning, we group responses by their original prompt and use all of them.
-
-        Args:
-            gen_batch: Original generation batch containing the original prompts
-            current_output: Current output containing all previous responses
-            n_agent: Number of agents (repetitions) per original prompt
-
-        Returns:
-            New output from transfer learning generation (one response per n_agent group)
-        """
-        batch_size = current_output.batch['responses'].shape[0]
-        num_unique_prompts = batch_size // n_agent
-
-        print(f"\n{'='*80}")
-        print("TRANSFER LEARNING - Creating prompts with all previous thinking processes")
-        print(f"{'='*80}")
-        print(f"Batch size: {batch_size}")
-        print(f"n_agent: {n_agent}")
-        print(f"Number of unique prompts: {num_unique_prompts}")
-        print(f"Responses per prompt: {n_agent}")
-        print()
-
-        # Create transfer learning prompts for each unique prompt (not per sample)
-        transfer_input_ids_list = []
-        original_prompt_ids_list = []  # Store original prompts to preserve for KL computation
-        for prompt_idx in range(num_unique_prompts):
-            # Calculate indices for this prompt group
-            start_idx = prompt_idx * n_agent
-            end_idx = start_idx + n_agent
-
-            # Get original prompt (should be same for all in group)
-            original_prompt_ids = current_output.batch['prompts'][start_idx]
-            original_prompt_ids_list.append(original_prompt_ids)  # Save for later
-
-            # Collect all prompts and responses for this prompt group
-            all_prompts_for_group = []
-            all_responses_for_prompt = []
-            for agent_idx in range(start_idx, end_idx):
-                prompt_ids = current_output.batch['prompts'][agent_idx]
-                response_ids = current_output.batch['responses'][agent_idx]
-                all_prompts_for_group.append(prompt_ids)
-                all_responses_for_prompt.append(response_ids)
-
-            # # Print debug info for ALL prompts (not just first)
-            # print(f"\n{'='*80}")
-            # print(f"PROMPT-RESPONSE MATCHING VERIFICATION (Prompt Group {prompt_idx})")
-            # print(f"{'='*80}\n")
-
-            # # Print all prompts in this group to verify they are identical
-            # print(f"ALL PROMPTS IN THIS GROUP ({len(all_prompts_for_group)} prompts, should be identical):")
-            # print(f"{'-'*80}\n")
-            # for i, prompt in enumerate(all_prompts_for_group):
-            #     prompt_decoded = self.tokenizer.decode(prompt, skip_special_tokens=True)
-            #     prompt_filtered = self._filter_text_for_display(prompt_decoded)
-            #     prompt_lines = prompt_filtered.split('\n')
-
-            #     print(f"Prompt {i} ({(prompt != self.tokenizer.pad_token_id).sum().item()} tokens, {len(prompt_lines)} lines):")
-            #     print(f"{'-'*80}")
-            #     print(prompt_filtered)  # Print entire text without truncation
-            #     print(f"\n{'-'*80}\n")
-
-            # print(f"{'='*80}\n")
-
-            # # Print all responses
-            # print(f"ALL RESPONSES FOR THIS PROMPT GROUP ({len(all_responses_for_prompt)} responses):")
-            # print(f"{'-'*80}\n")
-            # for i, resp in enumerate(all_responses_for_prompt):
-            #     resp_decoded = self.tokenizer.decode(resp, skip_special_tokens=True)
-            #     resp_filtered = self._filter_text_for_display(resp_decoded)
-            #     resp_lines = resp_filtered.split('\n')
-
-            #     print(f"Response {i} ({(resp != self.tokenizer.pad_token_id).sum().item()} tokens, {len(resp_lines)} lines):")
-            #     print(resp_filtered)  # Print entire text without truncation
-            #     print(f"\n{'-'*80}\n")
-
-            # print(f"{'='*80}\n")
-
-            # if prompt_idx == 0:  # Only pause at first prompt group for interactive debugging
-            #     import pdb; pdb.set_trace()
-
-            # Create transfer learning prompt using ALL responses from this prompt
-            transfer_prompt_ids = self._create_transfer_learning_prompt(
-                original_prompt_ids,
-                all_responses_for_prompt
-            )
-
-            # if prompt_idx == 0:
-            #     print(f"  - Transfer prompt length: {len(transfer_prompt_ids)} tokens")
-            #     print()
-
-            transfer_input_ids_list.append(transfer_prompt_ids)
-
-        # Pad to same length
-        max_seq_len = max(len(ids) for ids in transfer_input_ids_list)
-        transfer_input_ids = torch.stack([
-            torch.cat([
-                torch.full((max_seq_len - len(ids),), self.tokenizer.pad_token_id, dtype=ids.dtype),
-                ids
-            ]) for ids in transfer_input_ids_list
-        ])
-
-        # Create attention mask and position ids
-        transfer_attention_mask = self.tensor_fn.create_attention_mask(transfer_input_ids)
-        transfer_position_ids = self.tensor_fn.create_position_ids(transfer_attention_mask)
-
-        # Create new gen_batch for transfer learning
-        transfer_gen_batch = DataProto.from_dict({
-            'input_ids': transfer_input_ids,
-            'attention_mask': transfer_attention_mask,
-            'position_ids': transfer_position_ids
-        })
-
-        # Copy meta_info from original
-        transfer_gen_batch.meta_info.update(gen_batch.meta_info)
-
-        # Note: UIDs are not available at generation time - they're added later in ray_trainer.py
-        # The UID handling happens after generation when batches are merged in the training pipeline
-
-        # Get the initial input for transfer learning
-        transfer_initial_input_ids = transfer_input_ids[:, -self.config.max_start_length:]
-
-        # Run LLM loop for transfer learning
-        print(f"\n{'='*80}")
-        print("TRANSFER LEARNING - Generating new thinking process")
-        print(f"{'='*80}\n")
-
-        transfer_output = self.run_llm_loop(transfer_gen_batch, transfer_initial_input_ids)
-
-        # Print ACTUAL transfer learning prompt that was used for generation (before replacement)
-        self.print_readable_dataproto(
-            {'prompts': transfer_output.batch['prompts'], 'responses': transfer_output.batch['responses']},
-            title=f"Transfer Learning Output (ACTUAL prompts used for generation - includes all previous responses + instruction)",
-            sample_indices=[0,1,2]  # Print first sample
-        )
-
-        # IMPORTANT: Replace extended prompts with original prompts for correct KL divergence computation
-        # The transfer response was generated conditioned on (original_prompt + all_previous_responses + transfer_instruction),
-        # but for KL divergence we want to compare against the original prompt only.
-        # We need to reconstruct input_ids = original_prompt + transfer_response
-        original_prompts_padded_list = []
-        max_original_prompt_len = max(len(p) for p in original_prompt_ids_list)
-        for original_prompt_ids in original_prompt_ids_list:
-            # Pad to max length
-            padded = torch.cat([
-                torch.full((max_original_prompt_len - len(original_prompt_ids),),
-                          self.tokenizer.pad_token_id,
-                          dtype=original_prompt_ids.dtype,
-                          device=original_prompt_ids.device),
-                original_prompt_ids
-            ])
-            original_prompts_padded_list.append(padded)
-
-        original_prompts_tensor = torch.stack(original_prompts_padded_list)
-
-        # Replace prompts in transfer_output
-        transfer_output.batch['prompts'] = original_prompts_tensor
-
-        # Rebuild input_ids = original_prompts + transfer_responses
-        transfer_output.batch['input_ids'] = torch.cat([
-            original_prompts_tensor,
-            transfer_output.batch['responses']
-        ], dim=1)
-
-        # Rebuild attention_mask and info_mask to match new input_ids
-        transfer_output.batch['attention_mask'] = torch.cat([
-            self.tensor_fn.create_attention_mask(original_prompts_tensor),
-            self.tensor_fn.create_attention_mask(transfer_output.batch['responses'])
-        ], dim=1)
-
-        transfer_output.batch['info_mask'] = torch.cat([
-            self.tensor_fn.create_attention_mask(original_prompts_tensor),
-            self.tensor_fn.create_attention_mask(transfer_output.batch['responses_with_info_mask'])
-        ], dim=1)
-
-        # Rebuild position_ids
-        transfer_output.batch['position_ids'] = self.tensor_fn.create_position_ids(
-            transfer_output.batch['attention_mask']
-        )
-
-        # Add metadata
-        transfer_output.meta_info['is_transfer_learning'] = True
-
-        # # Print transfer learning output in readable format
-        # self.print_readable_dataproto(
-        #     {'prompts': transfer_output.batch['prompts'], 'responses': transfer_output.batch['responses']},
-        #     title=f"Transfer Learning Output (with original prompt restored)",
-        #     sample_indices=[0]  # Print first sample
-        # )
-
-        return transfer_output
-
     def run_llm_loop_self_evolve(self, gen_batch, initial_input_ids: torch.Tensor) -> DataProto:
         """
         Wrapper around run_llm_loop that adds self-evolution capability (revision + transfer learning).
@@ -1781,14 +2055,14 @@ class LLMGenerationManager:
             return self.run_llm_loop(gen_batch, initial_input_ids)
 
         print(f"\n{'='*80}")
-        print(f"run_llm_loop_self_evolve (num_revisions={self.config.num_revisions}, transfer_learning={self.config.enable_transfer_learning})")
+        print(f"run_llm_loop_self_evolve (revision={self.config.enable_revision}, transfer_learning={self.config.enable_transfer_learning})")
         print(f"{'='*80}\n")
 
         # Run initial generation
         print(f"\n{'='*80}")
         print("INITIAL GENERATION")
         print(f"{'='*80}\n")
-        self.current_revision_round = 0  # Set to 0 for initial generation
+        self.current_phase = 'initial'
         current_output = self.run_llm_loop(gen_batch, initial_input_ids)
 
         # Print initial generation output in readable format
@@ -1804,20 +2078,20 @@ class LLMGenerationManager:
         # Store original output for transfer learning if needed
         original_output = current_output
 
-        # Self-revision loop
-        for revision_round in range(1, self.config.num_revisions + 1):
+        # Self-revision (single round only)
+        if self.config.enable_revision:
             print(f"\n{'='*80}")
-            print(f"SELF-REVISION ROUND {revision_round}/{self.config.num_revisions}")
+            print(f"SELF-REVISION")
             print(f"{'='*80}\n")
-            current_output = self._perform_single_revision(gen_batch, current_output, revision_round)
+            current_output = self._perform_revision(gen_batch, current_output)
             print(f"\n{'='*80}")
-            print(f"SELF-REVISION ROUND {revision_round}/{self.config.num_revisions} COMPLETED")
+            print(f"SELF-REVISION COMPLETED")
             print(f"{'='*80}\n")
 
-        # After revision loop (or if no revision), apply transfer learning if enabled
+        # After revision (or if no revision), apply transfer learning if enabled
         if self.config.enable_transfer_learning:
             # Choose which responses to use for transfer learning based on config
-            if self.config.transfer_use_revised and self.config.num_revisions > 0:
+            if self.config.transfer_use_revised and self.config.enable_revision:
                 # Use revised responses for transfer learning
                 print(f"Using REVISED responses for transfer learning")
                 transfer_input = current_output
@@ -1826,12 +2100,26 @@ class LLMGenerationManager:
                 print(f"Using ORIGINAL responses for transfer learning")
                 transfer_input = original_output
 
-            # Apply transfer learning and merge
-            current_output = self._apply_transfer_learning_and_merge(
-                gen_batch,
-                transfer_input,
-                revision_round=self.config.num_revisions
+            # Perform transfer learning
+            print(f"\n{'='*80}")
+            print(f"TRANSFER LEARNING")
+            print(f"{'='*80}\n")
+
+            transfer_output = self._perform_transfer_learning(gen_batch, transfer_input, self.n_agent)
+            transfer_output.meta_info['is_transfer'] = True
+            transfer_output.meta_info['generation_type'] = 'transfer_learning'
+
+            # Merge base and transfer learning outputs
+            transfer_batch_size = transfer_output.batch['responses'].shape[0]
+            current_output = self._merge_revision_and_transfer_outputs(
+                revision_output=transfer_input,
+                transfer_output=transfer_output,
+                num_unique_prompts=transfer_batch_size
             )
+
+            print(f"\n{'='*80}")
+            print(f"TRANSFER LEARNING COMPLETED AND MERGED")
+            print(f"{'='*80}\n")
 
         print(f"\n{'='*80}")
         print(f"run_llm_loop_self_evolve COMPLETE")

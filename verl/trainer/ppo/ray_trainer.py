@@ -498,7 +498,7 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
-            num_revisions=self.config.num_revisions,
+            enable_revision=self.config.enable_revision,
             enable_transfer_learning=self.config.enable_transfer_learning,
         )
 
@@ -735,7 +735,7 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
-            num_revisions=self.config.num_revisions,
+            enable_revision=self.config.enable_revision,
             enable_transfer_learning=self.config.enable_transfer_learning,
         )
 
@@ -754,7 +754,7 @@ class RayPPOTrainer(object):
         for epoch in range(self.config.trainer.total_epochs):
             for batch_idx, batch_dict in enumerate(self.train_dataloader):
                 print(f"\n{'='*100}")
-                print(f'Training Batch: epoch {epoch}, batch {batch_idx}, step {self.global_steps}')
+                print(f'Training Batch: epoch {epoch}, batch {batch_idx}, global step {self.global_steps}')
                 print(f"\n{'='*100}")
 
                 metrics = {}
@@ -786,6 +786,40 @@ class RayPPOTrainer(object):
                 # with _timer('step', timing_raw):
                     else:
                         first_input_ids = gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone().long()
+
+                        # # Print prompts to understand structure
+                        # print(f"\n{'='*100}")
+                        # print(f"PROMPT STRUCTURE ANALYSIS (Before run_llm_loop_self_evolve)")
+                        # print(f"{'='*100}")
+                        # print(f"Batch size: {gen_batch.batch['input_ids'].shape[0]}")
+                        # print(f"Full input_ids shape: {gen_batch.batch['input_ids'].shape}")
+                        # print(f"Truncated input_ids shape (first_input_ids): {first_input_ids.shape}")
+                        # print(f"max_start_length: {gen_config.max_start_length}")
+
+                        # # Decode and print first 2 samples to see prompt structure
+                        # num_samples_to_show = min(2, gen_batch.batch['input_ids'].shape[0])
+                        # for i in range(num_samples_to_show):
+                        #     print(f"\n{'-'*100}")
+                        #     print(f"Sample {i}:")
+                        #     print(f"{'-'*100}")
+
+                        #     # Decode full prompt
+                        #     full_prompt = self.tokenizer.decode(gen_batch.batch['input_ids'][i], skip_special_tokens=False)
+                        #     print(f"\nFull prompt (input_ids):")
+                        #     print(f"{full_prompt}")
+
+                        #     # Decode truncated prompt
+                        #     truncated_prompt = self.tokenizer.decode(first_input_ids[i], skip_special_tokens=False)
+                        #     print(f"\nTruncated prompt (first_input_ids, last {gen_config.max_start_length} tokens):")
+                        #     print(f"{truncated_prompt}")
+
+                        # print(f"\n{'='*100}")
+                        # print(f"Analysis:")
+                        # print(f"- Each sample in gen_batch contains the full prompt (with system prompt if included)")
+                        # print(f"- first_input_ids takes only the last {gen_config.max_start_length} tokens")
+                        # print(f"- If system prompt is present, check if it appears in BOTH full and truncated versions")
+                        # print(f"- If system prompt only appears in full version, it will be lost after truncation")
+                        # print(f"{'='*100}\n")
 
                         with _timer('gen', timing_raw):
                             generation_manager.timing_raw = timing_raw
