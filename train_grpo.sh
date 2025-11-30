@@ -1,6 +1,10 @@
 export CUDA_VISIBLE_DEVICES=0,1
 export DATA_DIR='data/nq_search'
 
+# Disable Ray color prefix and task prefix for cleaner output
+export RAY_COLOR_PREFIX=0
+export RAY_DEDUP_LOGS=0
+
 WAND_PROJECT='Search-R1-baseline2'
 
 # Clean up any existing Ray instances to avoid actor registry conflicts
@@ -39,10 +43,10 @@ echo "Ray start complete"
 # export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-em-baseline
 # export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
 # export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-it-em
-export BASE_MODEL='Qwen/Qwen2.5-7B'
-export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-em-test
-# export BASE_MODEL='Qwen/Qwen2.5-7B-Instruct'
-# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-it-em
+# export BASE_MODEL='Qwen/Qwen2.5-7B'
+# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-em-test
+export BASE_MODEL='Qwen/Qwen2.5-7B-Instruct'
+export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-it-em
 
 # set -x
 export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has some issues
@@ -109,9 +113,16 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     retriever.topk=3 \
     enable_revision=true \
     enable_transfer_learning=false \
-    enable_prompt_response_verification=true \
-    2>&1 | tee $EXPERIMENT_NAME.log
+    enable_prompt_response_verification=false \
+    disable_batch_balancing=true \
+    2>&1 | sed -E 's/^\x1b\[[0-9;]*m//; s/^\(main_task pid=[0-9]+\) //' | tee $EXPERIMENT_NAME.log
 
+
+# Batch Balancing Configuration
+# Set disable_batch_balancing=true to maintain the order of samples between generation and scoring
+# This is useful for debugging to ensure the printed generation output matches the reward computation output
+# When enabled, batch reordering for load balancing is skipped
+# Default: false (batch balancing is enabled for better performance)
 
 # Prompt-Response Verification Configuration
 # Set enable_prompt_response_verification=true to enable detailed logging of prompt-response matching

@@ -36,32 +36,34 @@ class GenerationConfig:
     """
     # Complete prompt template for analysis step
     # This shows the entire structure of what the LLM sees when analyzing a response
+    # for debug search "Revision Output (2 Steps: Analysis and Revision)"
+
     analysis_full_prompt_template: str = """
 
-You are an expert in analyzing how LLM agents answer questions using external search.
+You are an expert in analyzing search queries used by LLM agents to answer questions.
 
-The agent's response uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+You will be given the question (with instructions) and the search queries from the agent's response (if any). Your task is ONLY to analyze the search strategy, NOT to answer the question.
 
-Note: If the agent uses invalid format, the system automatically adds correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." These are system-generated feedback, not part of the agent's original thinking.
-
-You will be given the question (with instructions) and the agent's response. Please analyze the response to identify strengths and weaknesses. Here is the question:
+Here is the question:
 
 {original_prompt}
 
-Here is the original response:
+Here are the search queries from the original response:
 
 {original_response}
 
-Please analyze the response above. Identify:
-1) Search queries (in <search> tags) and their effectiveness in finding relevant information
-2) Reasoning steps (in <think> tags) - any errors or suboptimal search strategy or answer formulation
-3) What information is missing or could be improved
-4) Whether invalid format was used (triggering system correction messages)
+Please analyze the search strategy above. Identify:
+1) Whether the search queries are properly formatted (each query should be inside <search> and </search> tags without nesting or unclosed tags). If no searches were made, note this.
+2) Whether the number of searches is reasonable. IMPORTANT: The system has strict limits on external searches. Use fewer, more targeted searches - each search should be highly informative.
+3) What search queries were used and their effectiveness in finding relevant information (or what searches should have been made if none were found)
+4) What queries are missing or could be improved
+5) Whether the queries are specific enough or too broad
 
 Guidelines:
-- Keep response under 200 words total
+- Keep response under 100 words total
 - Use plain text, no formatting
 - Be specific and actionable
+- DO NOT attempt to answer the question - only analyze the search strategy
 
 Provide your analysis:
 
@@ -72,28 +74,28 @@ Provide your analysis:
 
     top_instruction_for_analysis: str = """
 
-You are an expert in analyzing how LLM agents answer questions using external search.
+You are an expert in analyzing search queries used by LLM agents to answer questions.
 
-The agent's response uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
+You will be given the question (with instructions) and the search queries from the agent's response (if any). Your task is ONLY to analyze the search strategy, NOT to answer the question.
 
-Note: If the agent uses invalid format, the system automatically adds correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." These are system-generated feedback, not part of the agent's original thinking.
-
-You will be given the question (with instructions) and the agent's response. Please analyze the response to identify strengths and weaknesses. Here is the question:
+Here is the question:
 
 """
 
     analysis_prompt: str = """
 
-Please analyze the response above. Identify:
-1) Search queries (in <search> tags) and their effectiveness in finding relevant information
-2) Reasoning steps (in <think> tags) - any errors or suboptimal search strategy or answer formulation
-3) What information is missing or could be improved
-4) Whether invalid format was used (triggering system correction messages)
+Please analyze the search strategy above. Identify:
+1) Whether the search queries are properly formatted (each query should be inside <search> and </search> tags without nesting or unclosed tags). If no searches were made, note this.
+2) Whether the number of searches is reasonable. IMPORTANT: The system has strict limits on external searches. Use fewer, more targeted searches - each search should be highly informative.
+3) What search queries were used and their effectiveness in finding relevant information (or what searches should have been made if none were found)
+4) What queries are missing or could be improved
+5) Whether the queries are specific enough or too broad
 
 Guidelines:
-- Keep response under 200 words total
+- Keep response under 100 words total
 - Use plain text, no formatting
 - Be specific and actionable
+- DO NOT attempt to answer the question - only analyze the search strategy
 
 Provide your analysis:
 
@@ -108,29 +110,21 @@ Provide your analysis:
 
 You are an expert in improving how LLM agents answer questions using external search.
 
-The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
-
-Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
-
-You will be given the question (with instructions), the agent's original response, and an analysis. Based on these, please develop a revised solution with better search queries and reasoning using the same tag format.
+You will be given the question (with instructions), the search queries from the agent's original response, and an analysis. Based on these, please develop a revised solution with better search queries and reasoning.
 
 Here is the question:
 
 {original_prompt}
 
-Here is the original response:
+Here are the search queries from the original response:
 
 {original_response}
 
-Here is the analysis of the original response:
+Here is the analysis of the search queries:
 
 {analysis}
 
-REMINDER - The question (with instructions) you need to answer is:
-
-{original_prompt}
-
-Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
@@ -139,25 +133,17 @@ Based on the analysis above, please develop a revised solution. You may consider
 
 You are an expert in improving how LLM agents answer questions using external search.
 
-The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
-
-Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
-
-You will be given the question (with instructions) and the agent's original response. Please develop a revised solution with better search queries and reasoning using the same tag format.
+You will be given the question (with instructions) and the search queries from the agent's original response. Please develop a revised solution with better search queries and reasoning.
 
 Here is the question:
 
 {original_prompt}
 
-Here is the original response:
+Here are the search queries from the original response:
 
 {original_response}
 
-REMINDER - The question (with instructions) you need to answer is:
-
-{original_prompt}
-
-Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
@@ -168,11 +154,7 @@ Please develop a revised solution. You may consider revising the search queries 
 
 You are an expert in improving how LLM agents answer questions using external search.
 
-The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
-
-Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
-
-You will be given the question (with instructions), the agent's original response, and an analysis. Based on these, please develop a revised solution with better search queries and reasoning using the same tag format.
+You will be given the question (with instructions), the search queries from the agent's original response, and an analysis. Based on these, please develop a revised solution with better search queries and reasoning.
 
 Here is the question:
 
@@ -182,11 +164,7 @@ Here is the question:
 
 You are an expert in improving how LLM agents answer questions using external search.
 
-The agent uses these tags: <think> for reasoning, <search> for queries, <information> for search results, <answer> for final answer.
-
-Note: If the original response used invalid format, the system may have added correction messages like "My previous action is invalid. If I want to search, I should put the query between <search> and </search>..." Your revised solution should use correct format from the start to avoid triggering these corrections.
-
-You will be given the question (with instructions) and the agent's original response. Please develop a revised solution with better search queries and reasoning using the same tag format.
+You will be given the question (with instructions) and the search queries from the agent's original response. Please develop a revised solution with better search queries and reasoning.
 
 Here is the question:
 
@@ -194,31 +172,25 @@ Here is the question:
 
     previous_response_instruction: str = """
 
-Here is the original response:
+Here are the search queries from the original response:
 
 """
 
     analysis_label: str = """
 
-Here is the analysis of the original response:
-
-"""
-
-    question_reminder: str = """
-
-REMINDER - The question (with instructions) you need to answer is:
+Here is the analysis of the search queries:
 
 """
 
     revision_after_analysis_prompt: str = """
 
-Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
     revision_prompt: str = """
 
-Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. Use the same format (<think>, <search>, <answer> tags).
+Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
@@ -227,7 +199,7 @@ Please develop a revised solution. You may consider revising the search queries 
 
     transfer_prompt: str = """
 
-Above are multiple previous thinking processes for the same question. Please analyze all the search queries used in these processes and select the best query approach to generate a new, improved thinking process.
+Above are multiple previous thinking processes for the same question. Please analyze all the search queries used in these processes and select the best query approach to generate a new, improved thinking process. Use fewer, more targeted searches - minimize the number of searches while maximizing their informativeness.
 
 """
 
@@ -309,8 +281,6 @@ class LLMGenerationManager:
             test_response +
             self.config.analysis_label +
             test_analysis +
-            self.config.question_reminder +
-            test_prompt +  # Question repeated as reminder
             self.config.revision_after_analysis_prompt
         )
 
@@ -334,8 +304,6 @@ class LLMGenerationManager:
             test_prompt +
             self.config.previous_response_instruction +
             test_response +
-            self.config.question_reminder +
-            test_prompt +  # Question repeated as reminder
             self.config.revision_prompt
         )
 
@@ -374,6 +342,42 @@ class LLMGenerationManager:
             end_idx -= 1
 
         return token_ids[start_idx:end_idx] if end_idx > start_idx else token_ids[:0]
+
+    def _extract_search_queries_only(self, text: str) -> str:
+        """
+        Extract only <search>...</search> content from the response text.
+        Filters out blocks where the content is just "and" (from system-generated correction messages).
+        This significantly reduces context length during analysis and revision by removing
+        lengthy <think>, <information>, and <answer> sections.
+
+        Args:
+            text: The original response text
+
+        Returns:
+            Text containing only the <search> sections with their tags (excluding system examples)
+        """
+        import re
+        # Find all <search>...</search> blocks
+        search_pattern = r'<search>.*?</search>'
+        search_blocks = re.findall(search_pattern, text, flags=re.DOTALL)
+
+        # Filter out blocks where content is just "and" (from system correction messages)
+        filtered_blocks = []
+        for block in search_blocks:
+            # Extract content between tags
+            content = re.search(r'<search>(.*?)</search>', block, flags=re.DOTALL)
+            if content:
+                content_text = content.group(1).strip()
+                # Skip if content is just "and" or "query" (from system-generated instruction examples)
+                if content_text not in ['and', 'query']:
+                    filtered_blocks.append(block)
+
+        # Join all search blocks with newlines
+        if filtered_blocks:
+            return '\n'.join(filtered_blocks)
+        else:
+            # If no search tags found, return a system note
+            return "[SYSTEM NOTE: No search queries found in the original response]"
 
     def _truncate_sequence(self,
                            segments: List[torch.Tensor],
@@ -1399,12 +1403,12 @@ class LLMGenerationManager:
             # ==================== TWO-STEP REVISION ====================
             # Step 1: Generate analysis of the initial response
             self.current_phase = 'analysis'
-            analysis_responses = self._generate_analysis(initial_output)
+            analysis_prompts, analysis_responses = self._generate_analysis(initial_output)
 
             # Step 2: Generate revised response based on analysis
             self.current_phase = 'revision'
             revision_output = self._generate_revision_with_analysis(
-                gen_batch, initial_output, analysis_responses
+                gen_batch, initial_output, analysis_prompts, analysis_responses
             )
         else:
             # ==================== SINGLE-STEP REVISION (original behavior) ====================
@@ -1440,7 +1444,17 @@ class LLMGenerationManager:
         for i in range(batch_size):
             # Strip special tokens from original_prompt to avoid repeated <endoftext> tokens
             original_prompt_ids = self._strip_special_tokens(initial_output.batch['prompts'][i])
-            previous_response_ids = self._strip_special_tokens(initial_output.batch['responses'][i])
+            previous_response_ids_full = self._strip_special_tokens(initial_output.batch['responses'][i])
+
+            # Decode previous response, extract only <search> queries, then re-encode
+            # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
+            previous_response_text = self.tokenizer.decode(previous_response_ids_full, skip_special_tokens=False)
+            filtered_response_text = self._extract_search_queries_only(previous_response_text)
+            previous_response_ids = self.tokenizer.encode(
+                filtered_response_text,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
 
             # Encode instructions for analysis step (use specific analysis instruction)
             top_instruction_ids = self.tokenizer.encode(
@@ -1500,10 +1514,11 @@ class LLMGenerationManager:
             sample_indices=[0, 1, 2, 3]
         )
 
-        return analysis_responses
+        return analysis_batch.batch['input_ids'], analysis_responses
 
     def _generate_revision_with_analysis(self, gen_batch: DataProto,
                                           initial_output: DataProto,
+                                          analysis_prompts: torch.Tensor,
                                           analysis_responses: torch.Tensor) -> DataProto:
         """
         Step 2 of two-step revision: Generate revised response based on analysis.
@@ -1511,6 +1526,7 @@ class LLMGenerationManager:
         Args:
             gen_batch: Original generation batch
             initial_output: Initial output containing responses to revise
+            analysis_prompts: Analysis prompts from step 1
             analysis_responses: Analysis responses from step 1
 
         Returns:
@@ -1522,8 +1538,18 @@ class LLMGenerationManager:
         for i in range(batch_size):
             # Strip special tokens from original_prompt to avoid repeated <endoftext> tokens
             original_prompt_ids = self._strip_special_tokens(initial_output.batch['prompts'][i])
-            previous_response_ids = self._strip_special_tokens(initial_output.batch['responses'][i])
+            previous_response_ids_full = self._strip_special_tokens(initial_output.batch['responses'][i])
             analysis_ids = self._strip_special_tokens(analysis_responses[i])
+
+            # Decode previous response, extract only <search> queries, then re-encode
+            # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
+            previous_response_text = self.tokenizer.decode(previous_response_ids_full, skip_special_tokens=False)
+            filtered_response_text = self._extract_search_queries_only(previous_response_text)
+            previous_response_ids = self.tokenizer.encode(
+                filtered_response_text,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
 
             # Encode instructions
             top_instruction_ids = self.tokenizer.encode(
@@ -1545,12 +1571,6 @@ class LLMGenerationManager:
                 return_tensors='pt'
             ).squeeze(0)
 
-            question_reminder_ids = self.tokenizer.encode(
-                self.config.question_reminder,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
             revision_instruction_ids = self.tokenizer.encode(
                 self.config.revision_after_analysis_prompt,
                 add_special_tokens=False,
@@ -1559,8 +1579,8 @@ class LLMGenerationManager:
 
             # Concatenate and truncate: original_prompt is truncatable to preserve instructions
             # Segments: [top_instruction, original_prompt, previous_response_instruction,
-            #            previous_response, analysis_label, analysis, question_reminder, original_prompt (repeated), revision_instruction]
-            # Priority: Keep top_instruction, question_reminder, and revision_instruction, truncate first original_prompt if needed
+            #            previous_response, analysis_label, analysis, revision_instruction]
+            # Priority: Keep top_instruction and revision_instruction, truncate original_prompt if needed
             full_revision_input = self._concatenate_and_truncate(
                 components=[
                     top_instruction_ids,
@@ -1569,13 +1589,11 @@ class LLMGenerationManager:
                     previous_response_ids,
                     analysis_label_ids,
                     analysis_ids,
-                    question_reminder_ids,
-                    original_prompt_ids,  # Repeat the question at the end as a reminder
                     revision_instruction_ids
                 ],
-                truncatable_index=1,  # Truncate first original_prompt to preserve instructions and question reminder
+                truncatable_index=1,  # Truncate original_prompt to preserve instructions
                 max_len=self.config.max_start_length,
-                keep_end=True  # Keep end of first original_prompt (most recent part)
+                keep_end=True  # Keep end of original_prompt (most recent part)
             )
 
             revision_input_ids_list.append(full_revision_input)
@@ -1596,12 +1614,105 @@ class LLMGenerationManager:
 
         revision_output = self.run_llm_loop(revision_gen_batch, revision_gen_batch.batch['input_ids'])
 
-        # Print ACTUAL revision prompt that was used for generation
-        self.print_readable_dataproto(
-            {'prompts': revision_output.batch['prompts'], 'responses': revision_output.batch['responses']},
-            title="Revision Output (Two-Step: After Analysis)",
-            sample_indices=[0, 1, 2, 3]
-        )
+        # Print all information for each sample together
+        sample_indices_to_print = [0, 1, 2, 3, 4, 5, 6]
+        for i in sample_indices_to_print:
+            if i >= revision_output.batch['prompts'].shape[0]:
+                continue
+
+            print(f"\n{'='*80}")
+            print(f"Revision Output (2 Steps: Analysis and Revision) - SAMPLE {i}")
+            print(f"{'='*80}")
+
+            # 1. Analysis Prompt
+            print(f"\n{'-'*80}")
+            print(f"[1] Analysis Prompt:")
+            print(f"{'-'*80}")
+            analysis_prompt_ids = analysis_prompts[i]
+            analysis_prompt_text = self.tokenizer.decode(analysis_prompt_ids, skip_special_tokens=True)
+            print(analysis_prompt_text)
+
+            # 2. Analysis Response
+            print(f"\n{'-'*80}")
+            print(f"[2] Analysis Response:")
+            print(f"{'-'*80}")
+            analysis_response_ids = analysis_responses[i]
+            analysis_response_text = self.tokenizer.decode(analysis_response_ids, skip_special_tokens=True)
+            print(analysis_response_text)
+
+            # 3. Revision Prompt
+            print(f"\n{'-'*80}")
+            print(f"[3] Revision Prompt:")
+            print(f"{'-'*80}")
+            prompt_ids = revision_output.batch['prompts'][i]
+            prompt_text = self.tokenizer.decode(prompt_ids, skip_special_tokens=True)
+            print(prompt_text)
+
+            # 4. Original Response
+            print(f"\n{'-'*80}")
+            print(f"[4] Original Response (Before Revision):")
+            print(f"{'-'*80}")
+            original_response_ids = initial_output.batch['responses'][i]
+            original_response_text = self.tokenizer.decode(original_response_ids, skip_special_tokens=True)
+            print(original_response_text)
+
+            # 5. Revised Response
+            print(f"\n{'-'*80}")
+            print(f"[5] Revised Response (After Revision):")
+            print(f"{'-'*80}")
+            revised_response_ids = revision_output.batch['responses'][i]
+            revised_response_text = self.tokenizer.decode(revised_response_ids, skip_special_tokens=True)
+            print(revised_response_text)
+
+            # 6. Standard Answer (Ground Truth) and Score
+            print(f"\n{'-'*80}")
+            print(f"[6] Standard Answer and Score for Revised Response:")
+            print(f"{'-'*80}")
+            try:
+                if i < len(gen_batch):
+                    data_item = gen_batch[i]
+                    ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
+
+                    # Import necessary functions
+                    import re
+                    from verl.utils.reward_score.qa_em import em_check
+
+                    # Extract answer from revised response (get the last <answer> tag)
+                    # Note: extract_solution requires 2+ <answer> tags (for revision scenario),
+                    # but revised response may only have 1, so we extract manually
+                    answer_pattern = r'<answer>(.*?)</answer>'
+                    matches = list(re.finditer(answer_pattern, revised_response_text, re.DOTALL))
+
+                    if matches:
+                        # Get the last answer tag
+                        extracted_answer = matches[-1].group(1).strip()
+                    else:
+                        extracted_answer = None
+
+                    # Compute score
+                    if extracted_answer is None:
+                        score = 0
+                    else:
+                        score = 1 if em_check(extracted_answer, ground_truth['target']) else 0
+
+                    # Print information (without printing the full solution string)
+                    print(f"Golden answers: {ground_truth['target']}")
+                    print(f"Extracted answer: {extracted_answer}")
+                    print(f"EM Score: {score}")
+                else:
+                    print(f"(Not available - i={i}, len(gen_batch)={len(gen_batch)})")
+            except (KeyError, IndexError, AttributeError) as e:
+                print(f"(Not available - Error: {type(e).__name__}: {e})")
+                # Debug: print available keys
+                try:
+                    data_item = gen_batch[i]
+                    print(f"  non_tensor_batch keys: {data_item.non_tensor_batch.keys() if hasattr(data_item, 'non_tensor_batch') else 'no non_tensor_batch'}")
+                    if hasattr(data_item, 'non_tensor_batch') and 'reward_model' in data_item.non_tensor_batch:
+                        print(f"  reward_model keys: {data_item.non_tensor_batch['reward_model'].keys()}")
+                except Exception as debug_e:
+                    print(f"  Debug error: {debug_e}")
+
+            print(f"\n{'='*80}\n")
 
         return revision_output
 
@@ -1623,7 +1734,17 @@ class LLMGenerationManager:
         for i in range(batch_size):
             # Strip special tokens from original_prompt to avoid repeated <endoftext> tokens
             original_prompt_ids = self._strip_special_tokens(initial_output.batch['prompts'][i])
-            previous_response_ids = self._strip_special_tokens(initial_output.batch['responses'][i])
+            previous_response_ids_full = self._strip_special_tokens(initial_output.batch['responses'][i])
+
+            # Decode previous response, extract only <search> queries, then re-encode
+            # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
+            previous_response_text = self.tokenizer.decode(previous_response_ids_full, skip_special_tokens=False)
+            filtered_response_text = self._extract_search_queries_only(previous_response_text)
+            previous_response_ids = self.tokenizer.encode(
+                filtered_response_text,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
 
             # Encode instructions
             previous_response_instruction_ids = self.tokenizer.encode(
@@ -1638,12 +1759,6 @@ class LLMGenerationManager:
                 return_tensors='pt'
             ).squeeze(0)
 
-            question_reminder_ids = self.tokenizer.encode(
-                self.config.question_reminder,
-                add_special_tokens=False,
-                return_tensors='pt'
-            ).squeeze(0)
-
             revision_instruction_ids = self.tokenizer.encode(
                 self.config.revision_prompt,
                 add_special_tokens=False,
@@ -1651,21 +1766,19 @@ class LLMGenerationManager:
             ).squeeze(0)
 
             # Concatenate and truncate: original_prompt is truncatable to preserve instructions
-            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, question_reminder, original_prompt (repeated), revision_instruction]
-            # Priority: Keep top_instruction, question_reminder, and revision_instruction, truncate first original_prompt if needed
+            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, revision_instruction]
+            # Priority: Keep top_instruction and revision_instruction, truncate original_prompt if needed
             full_revision_input = self._concatenate_and_truncate(
                 components=[
                     top_instruction_ids,
                     original_prompt_ids,
                     previous_response_instruction_ids,
                     previous_response_ids,
-                    question_reminder_ids,
-                    original_prompt_ids,  # Repeat the question at the end as a reminder
                     revision_instruction_ids
                 ],
-                truncatable_index=1,  # Truncate first original_prompt to preserve instructions and question reminder
+                truncatable_index=1,  # Truncate original_prompt to preserve instructions
                 max_len=self.config.max_start_length,
-                keep_end=True  # Keep end of first original_prompt (most recent part)
+                keep_end=True  # Keep end of original_prompt (most recent part)
             )
 
             revision_input_ids_list.append(full_revision_input)

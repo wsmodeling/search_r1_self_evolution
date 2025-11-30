@@ -183,6 +183,7 @@ do_search: true
 enable_revision: true  # Whether to perform self-revision
 enable_transfer_learning: true  # Enable transfer learning between thinking processes from the same prompt
 enable_prompt_response_verification: false  # Enable detailed logging of prompt-response matching for debugging
+disable_batch_balancing: false  # Disable batch reordering for debugging (maintains order between generation and scoring)
 
 # Memory database configuration for storing and retrieving low-reward responses
 memory_db:

@@ -82,7 +82,7 @@ def extract_solution(solution_str):
     return matches[-1].group(1).strip()
 
 
-def compute_score_em(solution_str, ground_truth, method='strict', format_score=0., score=1.):
+def compute_score_em(solution_str, ground_truth, method='strict', format_score=0., score=1., verbose=True):
     """The scoring function for exact match (EM).
 
     Args:
@@ -91,10 +91,11 @@ def compute_score_em(solution_str, ground_truth, method='strict', format_score=0
         method: the method to extract the solution, choices are 'strict' and 'flexible'
         format_score: the score for the format
         score: the score for the correct answer
+        verbose: whether to print detailed information (default: True for backward compatibility)
     """
     answer = extract_solution(solution_str=solution_str)
-    do_print = True # random.randint(1, 64) == 1
-    
+    do_print = verbose # random.randint(1, 64) == 1
+
     if answer is None:
         final_score = 0
     else:

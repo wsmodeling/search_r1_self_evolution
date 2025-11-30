@@ -75,7 +75,9 @@ class RewardManager():
             data_source = data_item.non_tensor_batch['data_source']
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            # Print first 6 samples for debugging
+            verbose = i < 10
+            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score, verbose=verbose)
 
             reward_tensor[i, valid_response_length - 1] = score
             # all_scores.append(score)

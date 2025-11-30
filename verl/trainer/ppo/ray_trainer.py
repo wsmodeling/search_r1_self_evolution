@@ -767,6 +767,9 @@ class RayPPOTrainer(object):
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
+                # Preserve non_tensor_batch for revision (to access ground truth)
+                gen_batch.non_tensor_batch = batch.non_tensor_batch
+
                 ####################
                 # original code here
 
@@ -903,7 +906,9 @@ class RayPPOTrainer(object):
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
-                    self._balance_batch(batch, metrics=metrics)
+                    # For debugging: disable batch balancing to maintain order between generation and scoring
+                    if not self.config.get('disable_batch_balancing', False):
+                        self._balance_batch(batch, metrics=metrics)
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
