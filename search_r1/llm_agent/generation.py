@@ -124,7 +124,7 @@ Here is the analysis of the search queries:
 
 {analysis}
 
-Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
@@ -143,7 +143,7 @@ Here are the search queries from the original response:
 
 {original_response}
 
-Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
@@ -184,13 +184,13 @@ Here is the analysis of the search queries:
 
     revision_after_analysis_prompt: str = """
 
-Based on the analysis above, please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
     revision_prompt: str = """
 
-Please develop a revised solution. You may consider revising the search queries to be more effective, improving reasoning steps, or adjusting the search strategy. IMPORTANT: Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 

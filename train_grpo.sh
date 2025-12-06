@@ -46,7 +46,7 @@ echo "Ray start complete"
 # export BASE_MODEL='Qwen/Qwen2.5-7B'
 # export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-em-test
 export BASE_MODEL='Qwen/Qwen2.5-7B-Instruct'
-export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-it-em
+export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-it-em-test
 
 # set -x
 export VLLM_ATTENTION_BACKEND=XFORMERS # vllm + qwen2-7b with flash_attn has some issues
