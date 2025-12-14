@@ -1,6 +1,10 @@
 export CUDA_VISIBLE_DEVICES=0
 export DATA_DIR='data/nq_search'
 
+# Disable Ray color prefix and task prefix for cleaner output
+export RAY_COLOR_PREFIX=0
+export RAY_DEDUP_LOGS=0
+
 WAND_PROJECT='Search-R1-baseline2'
 
 # Clean up any existing Ray instances to avoid actor registry conflicts
@@ -38,10 +42,10 @@ echo "Ray start complete"
 # export BASE_MODEL='Qwen/Qwen2.5-3B'
 # update EXPERIMENT_NAME to avoid overwriting previous logs and checkpoints
 # export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-em-test
-# export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
-# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-it-em
-export BASE_MODEL='Qwen/Qwen2.5-7B'
-export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-em-test
+export BASE_MODEL='Qwen/Qwen2.5-3B-Instruct'
+export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-3b-it-em
+# export BASE_MODEL='Qwen/Qwen2.5-7B'
+# export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-em-test
 # export BASE_MODEL='Qwen/Qwen2.5-7B-Instruct'
 # export EXPERIMENT_NAME=nq-search-r1-grpo-qwen2.5-7b-it-em
 
@@ -60,7 +64,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     data.val_files=$DATA_DIR/test.parquet \
     data.train_data_num=null \
     data.val_data_num=null \
-    data.train_batch_size=1 \
+    data.train_batch_size=3 \
     data.val_batch_size=1 \
     data.max_prompt_length=8192 \
     data.max_response_length=500 \
@@ -88,7 +92,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     algorithm.no_think_rl=false \
-    actor_rollout_ref.rollout.n_agent=2 \
+    actor_rollout_ref.rollout.n_agent=3 \
     actor_rollout_ref.rollout.temperature=1 \
     actor_rollout_ref.actor.state_masking=true \
     trainer.logger=['wandb'] \
@@ -109,25 +113,46 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     retriever.url="http://127.0.0.1:8000/retrieve" \
     retriever.topk=3 \
     enable_revision=true \
-    enable_transfer_learning=false \
+    enable_transfer_learning=true \
     enable_prompt_response_verification=false \
-    2>&1 | tee $EXPERIMENT_NAME.log
+    disable_batch_balancing=true \
+    memory_db.enable=true \
+    2>&1 | sed -E 's/^\x1b\[[0-9;]*m//; s/^\(main_task pid=[0-9]+\) //' | tee $EXPERIMENT_NAME.log
 
 
+# Batch Balancing Configuration
+# Set disable_batch_balancing=true to maintain the order of samples between generation and scoring
+# This is useful for debugging to ensure the printed generation output matches the reward computation output
+# When enabled, batch reordering for load balancing is skipped
+# Default: false (batch balancing is enabled for better performance)
+
+# Prompt-Response Verification Configuration
+# Set enable_prompt_response_verification=true to enable detailed logging of prompt-response matching
+# This shows the first 3 unique prompts with their responses for debugging purposes
+# Useful for verifying that revision and transfer learning responses are correctly matched to prompts
+# Set to false to disable this verbose output and improve training performance
+# Default value is defined in verl/trainer/config/ppo_trainer.yaml (false by default)
+
+
+# Memory Database Parameters Explained:
+# - memory_db.enable: Set to true to enable, false to disable (default behavior without memory_db)
+# - memory_db.db_path: (OPTIONAL) JSON file path to store responses. If not provided, automatically uses:
+#                      ./memory_db/responses_{EXPERIMENT_NAME}.json
+# - memory_db.low_reward_threshold: Save responses with reward score < this value (default: 0.3)
+# - memory_db.retrieval_ratio: Proportion of batch to augment with bad responses (default: 0.2 = 20%)
+# - memory_db.min_retrieval_score: Minimum score threshold for retrieving bad responses (default: -1.0)
+# - memory_db.max_retrieval_score: Maximum score threshold for retrieving bad responses (default: 0.5)
+# - memory_db.use_embedding: Use embedding similarity for retrieval (default: true)
+# - memory_db.top_k_similar: Top-k similar candidates before score filtering (default: 100)
+#
+# To enable memory_db: Set memory_db.enable=true (db_path is auto-generated from experiment name)
+# The feature is backward-compatible: if disabled or omitted, training works as before
+
+# Example with custom parameters:
 # memory_db.enable=true \
-# memory_db.db_path=./memory_db/responses_${EXPERIMENT_NAME}.json \
 # memory_db.low_reward_threshold=0.3 \
 # memory_db.retrieval_ratio=0.2 \
 # memory_db.min_retrieval_score=-1.0 \
 # memory_db.max_retrieval_score=0.5 \
-
-# Memory Database Parameters Explained:
-# - memory_db.enable: Set to true to enable, false to disable (default behavior without memory_db)
-# - memory_db.db_path: JSON file path to store responses (use ${EXPERIMENT_NAME} for unique db per experiment)
-# - memory_db.low_reward_threshold: Save responses with reward score < this value (e.g., 0.3)
-# - memory_db.retrieval_ratio: Proportion of batch to augment with bad responses (0.2 = 20%)
-# - memory_db.min_retrieval_score: Minimum score threshold for retrieving bad responses (-1.0)
-# - memory_db.max_retrieval_score: Maximum score threshold for retrieving bad responses (0.5)
-#
-# To enable memory_db: Change memory_db.enable=false to memory_db.enable=true
-# The feature is backward-compatible: if disabled or omitted, training works as before
+# memory_db.use_embedding=true \
+# memory_db.top_k_similar=100 \

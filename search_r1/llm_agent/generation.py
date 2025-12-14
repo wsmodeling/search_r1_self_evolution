@@ -143,14 +143,14 @@ Here are the search queries from the original response:
 
 {original_response}
 
-Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+Please develop a revised solution with better search queries and reasoning. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
     # Separate components used in actual implementation
     # (The templates above show the complete structure, but the code uses these individual pieces)
 
-    top_instruction: str = """
+    top_instruction_for_revision_with_analysis: str = """
 
 You are an expert in improving how LLM agents answer questions using external search.
 
@@ -182,24 +182,63 @@ Here is the analysis of the search queries:
 
 """
 
-    revision_after_analysis_prompt: str = """
+    revision_instruction_for_two_step: str = """
 
 Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
-    revision_prompt: str = """
+    revision_instruction_for_single_step: str = """
 
-Based on the analysis above, please develop a revised solution. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+Please develop a revised solution with better search queries and reasoning. IMPORTANT: Please try not to change the queries in the original response - only change queries that are inappropriate or have very vague/unclear phrasing. You may also improve reasoning steps or adjust the search strategy. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
     enable_transfer_learning: bool = True  # Enable transfer learning between thinking processes from the same prompt
     transfer_use_revised: bool = True  # If True, transfer learning uses revised responses; if False, uses original responses
 
+    # Complete prompt template for transfer learning
+    # This shows the entire structure of what the LLM sees when doing transfer learning
+    transfer_full_prompt_template: str = """
+
+You are an expert in improving how LLM agents answer questions using external search.
+
+You will be given the question (with instructions) and the search queries from multiple previous thinking processes for this question. Please analyze these search queries and select the best query approach to generate a new, improved thinking process.
+
+Here is the question:
+
+{original_prompt}
+
+Previous thinking process 1 (search queries only):
+
+{previous_response_1}
+
+Previous thinking process 2 (search queries only):
+
+{previous_response_2}
+
+...
+
+Above are search queries from multiple previous thinking processes for the same question. Please analyze these search queries and select the best query approach to generate a new, improved thinking process. Use fewer, more targeted searches - minimize the number of searches while maximizing their informativeness. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
+
+"""
+
+    # Separate components used in actual transfer learning implementation
+    # (The template above shows the complete structure, but the code uses these individual pieces)
+
+    top_instruction_for_transfer: str = """
+
+You are an expert in improving how LLM agents answer questions using external search.
+
+You will be given the question (with instructions) and the search queries from multiple previous thinking processes for this question. Please analyze these search queries and select the best query approach to generate a new, improved thinking process.
+
+Here is the question:
+
+"""
+
     transfer_prompt: str = """
 
-Above are multiple previous thinking processes for the same question. Please analyze all the search queries used in these processes and select the best query approach to generate a new, improved thinking process. Use fewer, more targeted searches - minimize the number of searches while maximizing their informativeness.
+Above are search queries from multiple previous thinking processes for the same question. Please analyze these search queries and select the best query approach to generate a new, improved thinking process. Use fewer, more targeted searches - minimize the number of searches while maximizing their informativeness. Follow ALL the instructions and format requirements specified in the question above, including using <think>, <search>, <answer> tags.
 
 """
 
@@ -275,13 +314,13 @@ class LLMGenerationManager:
             analysis=test_analysis
         )
         actual_revision = (
-            self.config.top_instruction +
+            self.config.top_instruction_for_revision_with_analysis +
             test_prompt +
             self.config.previous_response_instruction +
             test_response +
             self.config.analysis_label +
             test_analysis +
-            self.config.revision_after_analysis_prompt
+            self.config.revision_instruction_for_two_step
         )
 
         if expected_revision.strip() != actual_revision.strip():
@@ -304,7 +343,7 @@ class LLMGenerationManager:
             test_prompt +
             self.config.previous_response_instruction +
             test_response +
-            self.config.revision_prompt
+            self.config.revision_instruction_for_single_step
         )
 
         if expected_single.strip() != actual_single.strip():
@@ -478,7 +517,7 @@ class LLMGenerationManager:
                     print(f"{key}: {value}")
 
             # Decode and print the full prompt
-            full_prompt_decoded = self.tokenizer.decode(full_prompt, skip_special_tokens=True)
+            full_prompt_decoded = self.tokenizer.decode(full_prompt.long(), skip_special_tokens=True)
             print(f"\nFull prompt content (first {print_char_limit} chars):")
             print(f"{'-'*80}")
             print(full_prompt_decoded[:print_char_limit])
@@ -499,7 +538,7 @@ class LLMGenerationManager:
                 print(f"DEBUG: {debug_label} Structure (AFTER truncation)")
                 print(f"{'='*80}")
                 print(f"Truncated prompt length: {len(full_prompt)} tokens (max: {max_len})")
-                truncated_decoded = self.tokenizer.decode(full_prompt, skip_special_tokens=True)
+                truncated_decoded = self.tokenizer.decode(full_prompt.long(), skip_special_tokens=True)
                 print(f"\nTruncated prompt content (first {print_char_limit} chars):")
                 print(f"{'-'*80}")
                 print(truncated_decoded[:print_char_limit])
@@ -813,7 +852,7 @@ class LLMGenerationManager:
             print(f"Phase: {self.current_phase}, Shape: {batch.batch[key].shape}")
             print("="*80)
             for i in range(min(4, batch.batch[key].shape[0])):  # Print first 4 samples
-                decoded = self.tokenizer.decode(batch.batch[key][i], skip_special_tokens=False)
+                decoded = self.tokenizer.decode(batch.batch[key][i].long(), skip_special_tokens=False)
                 print(f"\n[{label} {i} - Length: {len(batch.batch[key][i])} tokens]:\n{decoded}")
             print("="*80 + "\n")
         return batch
@@ -955,7 +994,7 @@ class LLMGenerationManager:
 
         num_gpus = self.config.num_gpus
 
-        # Ensure all tensors are long type
+        # Convert all tensors to fp32
         for key in active_batch.batch.keys():
             active_batch.batch[key] = active_batch.batch[key].long()
 
@@ -1448,7 +1487,7 @@ class LLMGenerationManager:
 
             # Decode previous response, extract only <search> queries, then re-encode
             # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
-            previous_response_text = self.tokenizer.decode(previous_response_ids_full, skip_special_tokens=False)
+            previous_response_text = self.tokenizer.decode(previous_response_ids_full.long(), skip_special_tokens=False)
             filtered_response_text = self._extract_search_queries_only(previous_response_text)
             previous_response_ids = self.tokenizer.encode(
                 filtered_response_text,
@@ -1475,9 +1514,9 @@ class LLMGenerationManager:
                 return_tensors='pt'
             ).squeeze(0)
 
-            # Concatenate and truncate: original_prompt is also truncatable to ensure top_instruction is preserved
-            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, analysis_instruction]
-            # Priority: Keep top_instruction and analysis_instruction, truncate original_prompt from beginning if needed
+            # Concatenate and truncate: original_prompt is also truncatable to ensure top_instruction_for_revision_with_analysis is preserved
+            # Segments: [top_instruction_for_revision_with_analysis, original_prompt, previous_response_instruction, previous_response, analysis_instruction]
+            # Priority: Keep top_instruction_for_revision_with_analysis and analysis_instruction, truncate original_prompt from beginning if needed
             full_analysis_input = self._concatenate_and_truncate(
                 components=[
                     top_instruction_ids,
@@ -1543,7 +1582,7 @@ class LLMGenerationManager:
 
             # Decode previous response, extract only <search> queries, then re-encode
             # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
-            previous_response_text = self.tokenizer.decode(previous_response_ids_full, skip_special_tokens=False)
+            previous_response_text = self.tokenizer.decode(previous_response_ids_full.long(), skip_special_tokens=False)
             filtered_response_text = self._extract_search_queries_only(previous_response_text)
             previous_response_ids = self.tokenizer.encode(
                 filtered_response_text,
@@ -1553,7 +1592,7 @@ class LLMGenerationManager:
 
             # Encode instructions
             top_instruction_ids = self.tokenizer.encode(
-                self.config.top_instruction,
+                self.config.top_instruction_for_revision_with_analysis,
                 add_special_tokens=False,
                 return_tensors='pt'
             ).squeeze(0)
@@ -1572,15 +1611,15 @@ class LLMGenerationManager:
             ).squeeze(0)
 
             revision_instruction_ids = self.tokenizer.encode(
-                self.config.revision_after_analysis_prompt,
+                self.config.revision_instruction_for_two_step,
                 add_special_tokens=False,
                 return_tensors='pt'
             ).squeeze(0)
 
             # Concatenate and truncate: original_prompt is truncatable to preserve instructions
-            # Segments: [top_instruction, original_prompt, previous_response_instruction,
+            # Segments: [top_instruction_for_revision_with_analysis, original_prompt, previous_response_instruction,
             #            previous_response, analysis_label, analysis, revision_instruction]
-            # Priority: Keep top_instruction and revision_instruction, truncate original_prompt if needed
+            # Priority: Keep top_instruction_for_revision_with_analysis and revision_instruction, truncate original_prompt if needed
             full_revision_input = self._concatenate_and_truncate(
                 components=[
                     top_instruction_ids,
@@ -1628,7 +1667,7 @@ class LLMGenerationManager:
             print(f"\n{'-'*80}")
             print(f"[1] Analysis Prompt:")
             print(f"{'-'*80}")
-            analysis_prompt_ids = analysis_prompts[i]
+            analysis_prompt_ids = analysis_prompts[i].long()
             analysis_prompt_text = self.tokenizer.decode(analysis_prompt_ids, skip_special_tokens=True)
             print(analysis_prompt_text)
 
@@ -1636,7 +1675,7 @@ class LLMGenerationManager:
             print(f"\n{'-'*80}")
             print(f"[2] Analysis Response:")
             print(f"{'-'*80}")
-            analysis_response_ids = analysis_responses[i]
+            analysis_response_ids = analysis_responses[i].long()
             analysis_response_text = self.tokenizer.decode(analysis_response_ids, skip_special_tokens=True)
             print(analysis_response_text)
 
@@ -1644,7 +1683,7 @@ class LLMGenerationManager:
             print(f"\n{'-'*80}")
             print(f"[3] Revision Prompt:")
             print(f"{'-'*80}")
-            prompt_ids = revision_output.batch['prompts'][i]
+            prompt_ids = revision_output.batch['prompts'][i].long()
             prompt_text = self.tokenizer.decode(prompt_ids, skip_special_tokens=True)
             print(prompt_text)
 
@@ -1652,7 +1691,7 @@ class LLMGenerationManager:
             print(f"\n{'-'*80}")
             print(f"[4] Original Response (Before Revision):")
             print(f"{'-'*80}")
-            original_response_ids = initial_output.batch['responses'][i]
+            original_response_ids = initial_output.batch['responses'][i].long()
             original_response_text = self.tokenizer.decode(original_response_ids, skip_special_tokens=True)
             print(original_response_text)
 
@@ -1660,7 +1699,7 @@ class LLMGenerationManager:
             print(f"\n{'-'*80}")
             print(f"[5] Revised Response (After Revision):")
             print(f"{'-'*80}")
-            revised_response_ids = revision_output.batch['responses'][i]
+            revised_response_ids = revision_output.batch['responses'][i].long()
             revised_response_text = self.tokenizer.decode(revised_response_ids, skip_special_tokens=True)
             print(revised_response_text)
 
@@ -1738,7 +1777,7 @@ class LLMGenerationManager:
 
             # Decode previous response, extract only <search> queries, then re-encode
             # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
-            previous_response_text = self.tokenizer.decode(previous_response_ids_full, skip_special_tokens=False)
+            previous_response_text = self.tokenizer.decode(previous_response_ids_full.long(), skip_special_tokens=False)
             filtered_response_text = self._extract_search_queries_only(previous_response_text)
             previous_response_ids = self.tokenizer.encode(
                 filtered_response_text,
@@ -1760,14 +1799,14 @@ class LLMGenerationManager:
             ).squeeze(0)
 
             revision_instruction_ids = self.tokenizer.encode(
-                self.config.revision_prompt,
+                self.config.revision_instruction_for_single_step,
                 add_special_tokens=False,
                 return_tensors='pt'
             ).squeeze(0)
 
             # Concatenate and truncate: original_prompt is truncatable to preserve instructions
-            # Segments: [top_instruction, original_prompt, previous_response_instruction, previous_response, revision_instruction]
-            # Priority: Keep top_instruction and revision_instruction, truncate original_prompt if needed
+            # Segments: [top_instruction_for_revision_single_step, original_prompt, previous_response_instruction, previous_response, revision_instruction]
+            # Priority: Keep top_instruction_for_revision_single_step and revision_instruction, truncate original_prompt if needed
             full_revision_input = self._concatenate_and_truncate(
                 components=[
                     top_instruction_ids,
@@ -1833,6 +1872,7 @@ class LLMGenerationManager:
         print(f"Number of unique prompts: {num_unique_prompts}")
         print(f"Responses per prompt: {n_agent}")
         print()
+        self.current_phase = 'transfer'
 
         # Create transfer learning prompts for each unique prompt (not per sample)
         transfer_input_ids_list = []
@@ -1921,14 +1961,13 @@ class LLMGenerationManager:
         print("TRANSFER LEARNING - Generating new thinking process")
         print(f"{'='*80}\n")
 
-        self.current_phase = 'transfer'
         transfer_output = self.run_llm_loop(transfer_gen_batch, transfer_gen_batch.batch['input_ids'])
 
         # Print ACTUAL transfer learning prompt that was used for generation (before replacement)
         self.print_readable_dataproto(
             {'prompts': transfer_output.batch['prompts'], 'responses': transfer_output.batch['responses']},
             title=f"Transfer Learning Output (ACTUAL prompts used for generation - includes all previous responses + instruction)",
-            sample_indices=[0,1,2]  # Print first sample
+            sample_indices=[0,1,2,3,4,5]  # Print first sample
         )
 
         # Replace extended prompts with original prompts for correct KL divergence computation
@@ -1961,19 +2000,37 @@ class LLMGenerationManager:
         # Strip special tokens from original prompt to avoid repeated <endoftext> tokens
         original_prompt_ids_clean = self._strip_special_tokens(original_prompt_ids)
 
-        # Start with cleaned original prompt
-        components = [original_prompt_ids_clean]
+        # Encode top instruction for transfer learning
+        top_instruction_ids = self.tokenizer.encode(
+            self.config.top_instruction_for_transfer,
+            add_special_tokens=False,
+            return_tensors='pt'
+        ).squeeze(0)
+
+        # Start with top instruction and original prompt
+        components = [top_instruction_ids, original_prompt_ids_clean]
 
         # Add all previous thinking processes with instruction before each
+        # Extract only search queries to reduce context length
         for idx, response_ids in enumerate(all_responses, 1):
-            # Add instruction before each response
+            # Decode response, extract only <search> queries, then re-encode
+            # This reduces context length by removing lengthy <think>, <information>, and <answer> sections
+            response_text = self.tokenizer.decode(response_ids.long(), skip_special_tokens=False)
+            filtered_response_text = self._extract_search_queries_only(response_text)
+            filtered_response_ids = self.tokenizer.encode(
+                filtered_response_text,
+                add_special_tokens=False,
+                return_tensors='pt'
+            ).squeeze(0)
+
+            # Add instruction before each response (now showing search queries only)
             response_instruction_ids = self.tokenizer.encode(
-                f"\n\nPrevious thinking process {idx}:\n",
+                f"\n\nPrevious thinking process {idx} (search queries only):\n",
                 add_special_tokens=False,
                 return_tensors='pt'
             ).squeeze(0)
             components.append(response_instruction_ids)
-            components.append(self._strip_special_tokens(response_ids))
+            components.append(filtered_response_ids)
 
         # Add transfer learning instruction
         transfer_instruction_ids = self.tokenizer.encode(
@@ -1983,21 +2040,23 @@ class LLMGenerationManager:
         ).squeeze(0)
         components.append(transfer_instruction_ids)
 
-        # Prepare truncation segments: [original_prompt, all_responses_concat, transfer_instruction]
-        response_components = components[1:-1]  # All response instructions + responses
+        # Prepare truncation segments: [top_instruction, original_prompt, all_responses_concat, transfer_instruction]
+        response_components = components[2:-1]  # All response instructions + responses (skip top_instruction and original_prompt)
         all_responses_concat = torch.cat(response_components, dim=0) if response_components else torch.tensor([], dtype=original_prompt_ids_clean.dtype)
 
         # Use helper to concatenate, debug print, and truncate
-        # Note: We make original_prompt_ids_clean truncatable (index 0) to preserve transfer_instruction
+        # Segments: [top_instruction_for_transfer, original_prompt, all_responses_concat, transfer_instruction]
+        # Priority: Keep top_instruction_for_transfer and transfer_instruction, truncate original_prompt if needed
         full_prompt = self._concatenate_and_truncate(
             components=components,
-            truncation_segments=[original_prompt_ids_clean, all_responses_concat, transfer_instruction_ids],
-            truncatable_index=0,  # Truncate original_prompt to preserve transfer_instruction
+            truncation_segments=[top_instruction_ids, original_prompt_ids_clean, all_responses_concat, transfer_instruction_ids],
+            truncatable_index=1,  # Truncate original_prompt (index 1) to preserve top_instruction and transfer_instruction
             max_len=self.config.max_start_length,
             keep_end=True,  # Keep end of original_prompt (most recent part)
             debug=True,
             debug_label="Transfer Learning Prompt",
             debug_info={
+                "Top instruction length": f"{len(top_instruction_ids)} tokens",
                 "Original prompt length": f"{len(original_prompt_ids_clean)} tokens",
                 "Number of responses": len(all_responses),
                 "Transfer instruction length": f"{len(transfer_instruction_ids)} tokens"
@@ -2362,7 +2421,7 @@ class LLMGenerationManager:
         #     first_prompt = current_output.batch['prompts'][0]
         #     first_prompt_decoded = self.tokenizer.decode(first_prompt, skip_special_tokens=True)
         #     # Check if it contains revision instruction (it shouldn't!)
-        #     has_revision_instr = self.config.revision_prompt[:50] in first_prompt_decoded if hasattr(self.config, 'revision_prompt') else False
+        #     has_revision_instr = self.config.revision_instruction_for_single_step[:50] in first_prompt_decoded if hasattr(self.config, 'revision_instruction_for_single_step') else False
         #     has_transfer_instr = "thinking processes" in first_prompt_decoded.lower()
 
         #     print(f"   First prompt length: {(first_prompt != self.tokenizer.pad_token_id).sum().item()} tokens")

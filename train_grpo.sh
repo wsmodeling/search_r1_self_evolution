@@ -132,13 +132,6 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
 # Default value is defined in verl/trainer/config/ppo_trainer.yaml (false by default)
 
 
-# memory_db.enable=true \
-# memory_db.db_path=./memory_db/responses_${EXPERIMENT_NAME}.json \
-# memory_db.low_reward_threshold=0.3 \
-# memory_db.retrieval_ratio=0.2 \
-# memory_db.min_retrieval_score=-1.0 \
-# memory_db.max_retrieval_score=0.5 \
-
 # Memory Database Parameters Explained:
 # - memory_db.enable: Set to true to enable, false to disable (default behavior without memory_db)
 # - memory_db.db_path: JSON file path to store responses (use ${EXPERIMENT_NAME} for unique db per experiment)
@@ -149,3 +142,10 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
 #
 # To enable memory_db: Change memory_db.enable=false to memory_db.enable=true
 # The feature is backward-compatible: if disabled or omitted, training works as before
+
+# memory_db.enable=true \
+# memory_db.db_path=./memory_db/responses_${EXPERIMENT_NAME}.json \
+# memory_db.low_reward_threshold=0.3 \
+# memory_db.retrieval_ratio=0.2 \
+# memory_db.min_retrieval_score=-1.0 \
+# memory_db.max_retrieval_score=0.5 \

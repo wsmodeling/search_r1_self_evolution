@@ -394,8 +394,20 @@ class RayPPOTrainer(object):
                 self.memory_db = None
                 return
 
-            # Initialize database
-            db_path = memory_db_config.get('db_path', './memory_db/responses.json')
+            # Initialize database path
+            # If db_path is not provided, automatically construct it from experiment name
+            db_path = memory_db_config.get('db_path', None)
+            if db_path is None:
+                # Get experiment name from trainer config
+                experiment_name = self.config.trainer.get('experiment_name', 'default')
+                db_path = f'../memory_db/responses_{experiment_name}.json'
+                print(f"[Memory DB] No db_path provided, using experiment name: {db_path}")
+
+            # Remove existing database file if it exists (start fresh each run)
+            if os.path.exists(db_path):
+                os.remove(db_path)
+                print(f"[Memory DB] Removed existing database: {db_path}")
+
             self.memory_db = JSONDatabase(db_path)
 
             # Memory DB parameters
@@ -403,11 +415,38 @@ class RayPPOTrainer(object):
             self.memory_db_retrieval_ratio = memory_db_config.get('retrieval_ratio', 0.2)  # 20% of batch
             self.memory_db_min_score = memory_db_config.get('min_retrieval_score', -1.0)
             self.memory_db_max_score = memory_db_config.get('max_retrieval_score', 0.5)
+            self.memory_db_use_embedding = memory_db_config.get('use_embedding', True)  # Enable embedding-based retrieval
+            self.memory_db_top_k_similar = memory_db_config.get('top_k_similar', 100)  # Retrieve top-k similar from embedding search
 
             print(f"[Memory DB] Initialized at: {db_path}")
             print(f"[Memory DB] Low reward threshold: {self.memory_db_low_reward_threshold}")
             print(f"[Memory DB] Retrieval ratio: {self.memory_db_retrieval_ratio}")
             print(f"[Memory DB] Score range for retrieval: [{self.memory_db_min_score}, {self.memory_db_max_score}]")
+            print(f"[Memory DB] Use embedding-based retrieval: {self.memory_db_use_embedding}")
+
+            # Initialize base model for embeddings (frozen, no gradient)
+            if self.memory_db_use_embedding:
+                try:
+                    from transformers import AutoModel
+                    model_path = self.config.actor_rollout_ref.model.get('path',
+                                 self.config.actor_rollout_ref.model.get('pretrained_model', 'Qwen/Qwen2.5-7B'))
+                    print(f"[Memory DB] Loading base model for embeddings from: {model_path}")
+                    self.embedding_model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.float16)
+                    self.embedding_model.eval()  # Set to eval mode
+                    # Move to GPU if available
+                    if torch.cuda.is_available():
+                        self.embedding_model = self.embedding_model.to('cuda')
+                    # Freeze all parameters
+                    for param in self.embedding_model.parameters():
+                        param.requires_grad = False
+                    print(f"[Memory DB] Embedding model loaded and frozen (no gradient updates)")
+                except Exception as e:
+                    print(f"[Memory DB] Warning: Could not load embedding model: {e}")
+                    print(f"[Memory DB] Falling back to non-embedding retrieval")
+                    self.memory_db_use_embedding = False
+                    self.embedding_model = None
+            else:
+                self.embedding_model = None
 
         except ImportError as e:
             print(f"[Memory DB] Warning: Could not import memory_db module: {e}")
@@ -838,13 +877,6 @@ class RayPPOTrainer(object):
                         for key in final_gen_batch_output.batch.keys():
                             final_gen_batch_output.batch[key] = final_gen_batch_output.batch[key].long()
 
-                        print(f"\n{'='*80}")
-                        print(f"STEP {self.global_steps} - compute_log_prob")
-                        print(f"{'='*80}")
-                        with torch.no_grad():
-                            output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
-                            final_gen_batch_output = final_gen_batch_output.union(output)
-
                         # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                         #                                         dtype=object)
                         batch.non_tensor_batch['uid'] = batch.non_tensor_batch['index'].copy()
@@ -891,8 +923,20 @@ class RayPPOTrainer(object):
                             # No additional repeat needed!
                             print(f"No transfer learning: batch size {len(batch.batch)} already matches generation output {len(final_gen_batch_output.batch)}")
 
-                        # Augment batch with bad responses from memory database
+                        # Augment batch with bad responses from memory database BEFORE computing log_prob
+                        # This way we compute log_prob only once for all samples (including negative samples)
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - [Memory db] _augment_batch_with_memory_db_responses (batch size: {final_gen_batch_output.batch['responses'].shape[0]})")
+                        print(f"{'='*80}")
                         batch, final_gen_batch_output = self._augment_batch_with_memory_db_responses(batch, final_gen_batch_output)
+
+                        # Compute log_prob for all samples (including augmented negative samples from memory DB)
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - compute_log_prob (batch size: {final_gen_batch_output.batch['responses'].shape[0]})")
+                        print(f"{'='*80}")
+                        with torch.no_grad():
+                            output = self.actor_rollout_wg.compute_log_prob(final_gen_batch_output)
+                            final_gen_batch_output = final_gen_batch_output.union(output)
 
                         batch = batch.union(final_gen_batch_output)
 
@@ -1037,6 +1081,9 @@ class RayPPOTrainer(object):
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
                         # Save low-reward responses to memory database
+                        print(f"\n{'='*80}")
+                        print(f"STEP {self.global_steps} - _save_low_reward_responses_to_memory_db")
+                        print(f"{'='*80}")
                         self._save_low_reward_responses_to_memory_db(batch, self.global_steps)
 
                         print(f"\n{'='*80}")
@@ -1235,6 +1282,46 @@ class RayPPOTrainer(object):
 
         return batch, metrics
 
+    def _extract_prompt_embedding(self, prompt_ids):
+        """
+        Extract embedding from the last token of the prompt using the frozen base model.
+
+        Args:
+            prompt_ids: Tensor of prompt token IDs (can be on GPU or CPU)
+
+        Returns:
+            Embedding vector as numpy array, or None if embedding model is not available
+        """
+        if not self.memory_db_use_embedding or self.embedding_model is None:
+            return None
+
+        try:
+            with torch.no_grad():
+                # Remove padding tokens and get actual prompt
+                non_pad_mask = prompt_ids != self.tokenizer.pad_token_id
+                actual_prompt_ids = prompt_ids[non_pad_mask]
+
+                if len(actual_prompt_ids) == 0:
+                    return None
+
+                # Move to same device as embedding model
+                device = next(self.embedding_model.parameters()).device
+                input_ids = actual_prompt_ids.unsqueeze(0).to(device)  # Add batch dimension
+
+                # Get model output
+                outputs = self.embedding_model(input_ids, output_hidden_states=True)
+
+                # Extract last token embedding from last hidden state
+                last_hidden_state = outputs.last_hidden_state  # (1, seq_len, hidden_dim)
+                last_token_embedding = last_hidden_state[0, -1, :]  # (hidden_dim,)
+
+                # Convert to numpy and return
+                return last_token_embedding.cpu().numpy()
+
+        except Exception as e:
+            print(f"[Memory DB] Warning: Failed to extract embedding: {e}")
+            return None
+
     def _save_low_reward_responses_to_memory_db(self, batch, step):
         """
         Save responses with low rewards to memory database.
@@ -1262,17 +1349,29 @@ class RayPPOTrainer(object):
             low_reward_mask = sequence_scores < self.memory_db_low_reward_threshold
             low_reward_indices = torch.where(low_reward_mask)[0].cpu().numpy()
 
+            # Filter out samples that came from memory DB (to avoid re-saving them)
+            from_memory_db_flags = batch.non_tensor_batch.get('from_memory_db', None)
+            if from_memory_db_flags is not None:
+                # Only keep indices where from_memory_db is False
+                original_count = len(low_reward_indices)
+                low_reward_indices = [idx for idx in low_reward_indices if not from_memory_db_flags[idx]]
+                filtered_count = len(low_reward_indices)
+                if original_count > filtered_count:
+                    print(f"[Memory DB] Filtered out {original_count - filtered_count} samples that came from memory DB (avoiding duplicates)")
+
             if len(low_reward_indices) == 0:
+                print(f"[Memory DB] No new low-reward responses to save (threshold: {self.memory_db_low_reward_threshold})")
                 return
 
-            print(f"\n[Memory DB] Saving {len(low_reward_indices)} low-reward responses (threshold: {self.memory_db_low_reward_threshold})")
+            print(f"\n[Memory DB] Saving {len(low_reward_indices)} new low-reward responses (threshold: {self.memory_db_low_reward_threshold})")
 
             # Save each low-reward response
             for idx in low_reward_indices:
                 idx = int(idx)
 
                 # Decode prompt and response
-                prompt_ids = prompts[idx].cpu().numpy()
+                prompt_ids_tensor = prompts[idx]
+                prompt_ids = prompt_ids_tensor.cpu().numpy()
                 response_ids = responses[idx].cpu().numpy()
 
                 # Remove padding tokens
@@ -1281,6 +1380,9 @@ class RayPPOTrainer(object):
 
                 # Get score
                 score = sequence_scores[idx].item()
+
+                # Extract prompt embedding from last token
+                prompt_embedding = self._extract_prompt_embedding(prompt_ids_tensor)
 
                 # Get UID if available
                 uid = batch.non_tensor_batch.get('uid', [None] * len(batch.batch))[idx]
@@ -1296,6 +1398,10 @@ class RayPPOTrainer(object):
                     'image': [],
                     'experience': []
                 }
+
+                # Add embedding if available
+                if prompt_embedding is not None:
+                    training_data['prompt_embedding'] = prompt_embedding.tolist()  # Convert to list for JSON serialization
 
                 # Insert or update training data
                 training_id = self.memory_db.insert_training_data(training_data)
@@ -1322,12 +1428,148 @@ class RayPPOTrainer(object):
             import traceback
             traceback.print_exc()
 
-    def _retrieve_bad_responses_from_memory_db(self, current_batch_size):
+    def _cosine_similarity(self, X, Y):
+        """
+        Compute cosine similarity between two matrices without sklearn.
+
+        Args:
+            X: numpy array of shape (n_samples_X, n_features)
+            Y: numpy array of shape (n_samples_Y, n_features)
+
+        Returns:
+            Similarity matrix of shape (n_samples_X, n_samples_Y)
+        """
+        import numpy as np
+
+        # Normalize rows to unit length
+        X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-10)
+        Y_norm = Y / (np.linalg.norm(Y, axis=1, keepdims=True) + 1e-10)
+
+        # Compute dot product (cosine similarity for normalized vectors)
+        return np.dot(X_norm, Y_norm.T)
+
+    def _retrieve_by_embedding_similarity(self, candidate_responses, current_batch_prompts, num_to_retrieve):
+        """
+        Retrieve responses similar to current batch using embedding similarity.
+
+        Args:
+            candidate_responses: List of candidate response dictionaries
+            current_batch_prompts: Tensor of current batch prompts
+            num_to_retrieve: Number of responses to retrieve
+
+        Returns:
+            List of selected responses based on similarity
+        """
+        try:
+            import numpy as np
+
+            # Extract embeddings from current batch
+            current_embeddings = []
+            for i in range(current_batch_prompts.shape[0]):
+                emb = self._extract_prompt_embedding(current_batch_prompts[i])
+                if emb is not None:
+                    current_embeddings.append(emb)
+
+            if len(current_embeddings) == 0:
+                print("[Memory DB] Could not extract embeddings from current batch, falling back to score-based retrieval")
+                candidate_responses.sort(key=lambda x: x['score'])
+                return candidate_responses[:num_to_retrieve]
+
+            current_embeddings = np.array(current_embeddings)  # (batch_size, hidden_dim)
+
+            # Filter candidates that have embeddings
+            candidates_with_embeddings = [c for c in candidate_responses if c['prompt_embedding'] is not None]
+
+            if len(candidates_with_embeddings) == 0:
+                print("[Memory DB] No stored embeddings found, falling back to score-based retrieval")
+                candidate_responses.sort(key=lambda x: x['score'])
+                return candidate_responses[:num_to_retrieve]
+
+            # Extract stored embeddings
+            stored_embeddings = np.array([c['prompt_embedding'] for c in candidates_with_embeddings])  # (n_candidates, hidden_dim)
+
+            # Compute similarity between current batch and all candidates
+            # For each candidate, compute max similarity to any prompt in current batch
+            similarities = self._cosine_similarity(stored_embeddings, current_embeddings)  # (n_candidates, batch_size)
+            max_similarities = similarities.max(axis=1)  # (n_candidates,) - max similarity for each candidate
+
+            # Add similarity score to candidates
+            for i, candidate in enumerate(candidates_with_embeddings):
+                candidate['similarity'] = max_similarities[i]
+
+            # First, get top-k most similar candidates
+            candidates_with_embeddings.sort(key=lambda x: x['similarity'], reverse=True)
+            top_k_similar = candidates_with_embeddings[:self.memory_db_top_k_similar]
+
+            # Among top-k similar, prioritize lower scores (worse responses)
+            top_k_similar.sort(key=lambda x: x['score'])
+            selected_responses = top_k_similar[:num_to_retrieve]
+
+            print(f"\n[Memory DB] Using embedding-based retrieval (top-{self.memory_db_top_k_similar} similar, then worst scores)")
+            print(f"[Memory DB] Similarity range: [{min(r['similarity'] for r in selected_responses):.3f}, {max(r['similarity'] for r in selected_responses):.3f}]")
+
+            # Detailed logging for debugging: show each retrieved sample and its matched prompt
+            print(f"\n{'='*100}")
+            print(f"[Memory DB] RETRIEVED NEGATIVE SAMPLES (Total: {len(selected_responses)})")
+            print(f"{'='*100}")
+
+            for idx, response in enumerate(selected_responses):
+                # Find which current prompt this negative sample is most similar to
+                stored_emb = np.array(response['prompt_embedding']).reshape(1, -1)
+                sims_to_current = self._cosine_similarity(stored_emb, current_embeddings)[0]  # (batch_size,)
+                most_similar_idx = sims_to_current.argmax()
+                max_sim = sims_to_current[most_similar_idx]
+
+                # Get the matched current prompt embedding
+                matched_current_emb = current_embeddings[most_similar_idx]
+
+                # Decode the matched current prompt
+                matched_prompt_ids = current_batch_prompts[most_similar_idx]
+                matched_prompt_text = self.tokenizer.decode(matched_prompt_ids.cpu().numpy(), skip_special_tokens=True)
+
+                print(f"\n{'-'*100}")
+                print(f"Negative Sample {idx + 1}/{len(selected_responses)}")
+                print(f"{'-'*100}")
+                print(f"Score: {response['score']:.3f} | Similarity: {response['similarity']:.3f}")
+
+                print(f"\n[Matched Current Prompt] (Similarity: {max_sim:.3f})")
+                print(f"{matched_prompt_text[:300]}...")  # Print first 300 chars
+                print(f"Embedding (first 10 dims): {matched_current_emb[:10]}")
+                print(f"Embedding shape: {matched_current_emb.shape}, L2 norm: {np.linalg.norm(matched_current_emb):.3f}")
+
+                print(f"\n[Retrieved Negative Prompt]")
+                print(f"{response['prompt'][:300]}...")  # Print first 300 chars
+                print(f"Embedding (first 10 dims): {stored_emb[0][:10]}")
+                print(f"Embedding shape: {stored_emb[0].shape}, L2 norm: {np.linalg.norm(stored_emb[0]):.3f}")
+
+                print(f"\n[Retrieved Negative Response]")
+                print(f"{response['response'][:500]}...")  # Print first 500 chars
+
+                # Print embedding statistics
+                print(f"\n[Embedding Comparison]")
+                print(f"Cosine similarity: {max_sim:.4f}")
+                print(f"L2 distance: {np.linalg.norm(matched_current_emb - stored_emb[0]):.4f}")
+                print(f"Dot product: {np.dot(matched_current_emb, stored_emb[0]):.4f}")
+
+            print(f"\n{'='*100}\n")
+
+            return selected_responses
+
+        except Exception as e:
+            print(f"[Memory DB] Error in embedding-based retrieval: {e}, falling back to score-based")
+            import traceback
+            traceback.print_exc()
+            candidate_responses.sort(key=lambda x: x['score'])
+            return candidate_responses[:num_to_retrieve]
+
+    def _retrieve_bad_responses_from_memory_db(self, current_batch_size, current_batch_prompts=None):
         """
         Retrieve bad responses from memory database to augment training.
+        Uses embedding similarity if enabled and current_batch_prompts is provided.
 
         Args:
             current_batch_size: Current batch size
+            current_batch_prompts: Tensor of current batch prompts for embedding-based retrieval (optional)
 
         Returns:
             List of tuples (prompt_text, response_text, score) or None if no data
@@ -1355,6 +1597,7 @@ class RayPPOTrainer(object):
             for training_id, training_entry in all_data.items():
                 llm_responses = training_entry.get('llm_answers_and_score', [])
                 problem = training_entry.get('problem', '')
+                prompt_embedding = training_entry.get('prompt_embedding', None)
 
                 for response_data in llm_responses:
                     score = response_data.get('accuracy', 0.0)
@@ -1365,19 +1608,27 @@ class RayPPOTrainer(object):
                             'prompt': problem,
                             'response': response_data.get('ans', ''),
                             'score': score,
-                            'training_id': training_id
+                            'training_id': training_id,
+                            'prompt_embedding': prompt_embedding
                         })
 
             if not candidate_responses:
                 print(f"[Memory DB] No responses found in score range [{self.memory_db_min_score}, {self.memory_db_max_score}]")
                 return None
 
-            # Sample responses (prioritize lower scores)
-            candidate_responses.sort(key=lambda x: x['score'])  # Sort by score ascending
-            selected_responses = candidate_responses[:num_to_retrieve]
+            # Use embedding-based retrieval if enabled and embeddings are available
+            if self.memory_db_use_embedding and current_batch_prompts is not None and self.embedding_model is not None:
+                selected_responses = self._retrieve_by_embedding_similarity(
+                    candidate_responses, current_batch_prompts, num_to_retrieve
+                )
+            else:
+                # Fallback to score-based selection (prioritize lower scores)
+                candidate_responses.sort(key=lambda x: x['score'])  # Sort by score ascending
+                selected_responses = candidate_responses[:num_to_retrieve]
 
-            print(f"[Memory DB] Retrieved {len(selected_responses)} bad responses from database")
-            print(f"[Memory DB] Score range of retrieved: [{selected_responses[0]['score']:.3f}, {selected_responses[-1]['score']:.3f}]")
+            if selected_responses:
+                print(f"[Memory DB] Retrieved {len(selected_responses)} bad responses from database")
+                print(f"[Memory DB] Score range of retrieved: [{min(r['score'] for r in selected_responses):.3f}, {max(r['score'] for r in selected_responses):.3f}]")
 
             return selected_responses
 
@@ -1386,6 +1637,100 @@ class RayPPOTrainer(object):
             import traceback
             traceback.print_exc()
             return None
+        
+    def _create_dataproto_from_memory_db_responses(self, bad_responses: list, reference_batch: DataProto) -> DataProto:
+        """
+        Create a DataProto from retrieved memory DB responses.
+
+        Args:
+            bad_responses: List of retrieved bad responses from memory DB
+            reference_batch: Reference batch to match dimensions and structure
+
+        Returns:
+            DataProto containing the tokenized bad responses
+        """
+        # Tokenize the retrieved bad responses
+        augment_prompts = []
+        augment_responses = []
+
+        for item in bad_responses:
+            # Tokenize prompt and response
+            prompt_tokens = self.tokenizer.encode(item['prompt'], add_special_tokens=True)
+            response_tokens = self.tokenizer.encode(item['response'], add_special_tokens=False)
+
+            # Truncate if necessary
+            max_prompt_len = reference_batch.batch['prompts'].shape[1]
+            max_response_len = reference_batch.batch['responses'].shape[1]
+
+            if len(prompt_tokens) > max_prompt_len:
+                prompt_tokens = prompt_tokens[:max_prompt_len]
+            if len(response_tokens) > max_response_len:
+                response_tokens = response_tokens[:max_response_len]
+
+            # Pad to match dimensions
+            prompt_tokens = prompt_tokens + [self.tokenizer.pad_token_id] * (max_prompt_len - len(prompt_tokens))
+            response_tokens = response_tokens + [self.tokenizer.pad_token_id] * (max_response_len - len(response_tokens))
+
+            augment_prompts.append(prompt_tokens)
+            augment_responses.append(response_tokens)
+
+        # Convert to tensors
+        augment_prompts_tensor = torch.tensor(augment_prompts, dtype=torch.long)
+        augment_responses_tensor = torch.tensor(augment_responses, dtype=torch.long)
+
+        # Create attention masks
+        augment_prompt_mask = (augment_prompts_tensor != self.tokenizer.pad_token_id).long()
+        augment_response_mask = (augment_responses_tensor != self.tokenizer.pad_token_id).long()
+        augment_attention_mask = torch.cat([augment_prompt_mask, augment_response_mask], dim=1)
+
+        # Create TensorDict matching the structure of reference_batch
+        from tensordict import TensorDict
+        batch_size = len(bad_responses)
+        batch_dict = {}
+
+        # Add all keys from reference batch
+        for key in reference_batch.batch.keys():
+            if key == 'prompts':
+                batch_dict[key] = augment_prompts_tensor
+            elif key == 'responses':
+                batch_dict[key] = augment_responses_tensor
+            elif key == 'responses_with_info_mask':
+                # responses_with_info_mask is same as responses for memory DB samples
+                batch_dict[key] = augment_responses_tensor
+            elif key == 'input_ids':
+                # input_ids is concatenation of prompts and responses
+                batch_dict[key] = torch.cat([augment_prompts_tensor, augment_responses_tensor], dim=1)
+            elif key == 'attention_mask':
+                batch_dict[key] = augment_attention_mask
+            elif key == 'info_mask':
+                # For memory DB samples, we can use the same mask as attention_mask
+                # or create a mask where all response tokens are True (since we want to train on them)
+                batch_dict[key] = augment_attention_mask
+            elif key == 'position_ids':
+                # Create position_ids (0, 1, 2, ..., seq_len-1) for each sample
+                seq_len = augment_attention_mask.shape[1]
+                batch_dict[key] = torch.arange(seq_len).unsqueeze(0).repeat(batch_size, 1)
+            elif isinstance(reference_batch.batch[key], torch.Tensor):
+                # For any other tensor keys, replicate the first sample from reference
+                ref_tensor = reference_batch.batch[key]
+                # Replicate first sample
+                batch_dict[key] = ref_tensor[:1].repeat(batch_size, *([1] * (ref_tensor.ndim - 1)))
+
+        # Create TensorDict
+        tensor_batch = TensorDict(batch_dict, batch_size=torch.Size([batch_size]))
+
+        # Create non_tensor_batch with marker for memory DB samples
+        # Note: DataProto requires dtype=object for non_tensor_batch
+        non_tensor_batch = {
+            'from_memory_db': np.array([True] * batch_size, dtype=object)
+        }
+
+        # Create and return DataProto
+        return DataProto(
+            batch=tensor_batch,
+            non_tensor_batch=non_tensor_batch,
+            meta_info={}
+        )
 
     def _augment_batch_with_memory_db_responses(self, batch: DataProto, gen_batch_output: DataProto):
         """
@@ -1402,74 +1747,84 @@ class RayPPOTrainer(object):
             return batch, gen_batch_output
 
         try:
-            # Retrieve bad responses
-            bad_responses = self._retrieve_bad_responses_from_memory_db(len(batch.batch))
+            # Retrieve bad responses (pass current batch prompts for embedding-based retrieval)
+            # Prompts are in gen_batch_output, not batch (batch and gen_batch_output are merged later)
+            current_batch_prompts = gen_batch_output.batch.get('prompts', None)
+            batch_size = len(gen_batch_output.batch) if hasattr(gen_batch_output.batch, '__len__') else gen_batch_output.batch['responses'].shape[0]
+
+            bad_responses = self._retrieve_bad_responses_from_memory_db(
+                batch_size,
+                current_batch_prompts=current_batch_prompts
+            )
 
             if bad_responses is None or len(bad_responses) == 0:
+                print(f"[Memory DB] No bad responses retrieved, skipping augmentation")
                 return batch, gen_batch_output
 
             print(f"\n[Memory DB] Augmenting batch with {len(bad_responses)} bad responses")
+            print(f"[Memory DB] Original batch size: {gen_batch_output.batch['responses'].shape[0]}")
 
-            # Tokenize the retrieved bad responses
-            augment_prompts = []
-            augment_responses = []
+            # Create DataProto for retrieved negative samples
+            memory_db_dataproto = self._create_dataproto_from_memory_db_responses(
+                bad_responses,
+                gen_batch_output
+            )
 
-            for item in bad_responses:
-                # Tokenize prompt and response
-                prompt_tokens = self.tokenizer.encode(item['prompt'], add_special_tokens=True)
-                response_tokens = self.tokenizer.encode(item['response'], add_special_tokens=False)
+            # Concatenate using DataProto.concat for clean merging
+            # This handles both batch (TensorDict) and non_tensor_batch automatically
+            print(f"[Memory DB] Before concat: gen_batch_output size = {gen_batch_output.batch['responses'].shape[0]}, memory_db size = {memory_db_dataproto.batch['responses'].shape[0]}")
+            gen_batch_output = DataProto.concat([gen_batch_output, memory_db_dataproto])
+            print(f"[Memory DB] After concat: gen_batch_output size = {gen_batch_output.batch['responses'].shape[0]}")
 
-                # Truncate if necessary
-                max_prompt_len = batch.batch['prompts'].shape[1]
-                max_response_len = gen_batch_output.batch['responses'].shape[1]
+            # Align batch with gen_batch_output using DataProto.concat
+            # Create placeholder prompts for the memory DB samples (repeat first sample)
+            if hasattr(batch, 'batch') and len(batch.batch) > 0:
+                num_to_add = len(bad_responses)
 
-                if len(prompt_tokens) > max_prompt_len:
-                    prompt_tokens = prompt_tokens[:max_prompt_len]
-                if len(response_tokens) > max_response_len:
-                    response_tokens = response_tokens[:max_response_len]
+                # Create a DataProto with placeholder prompts (replicate first sample)
+                placeholder_batch_dict = {}
+                for key in batch.batch.keys():
+                    if isinstance(batch.batch[key], torch.Tensor):
+                        # Replicate the first sample as placeholder
+                        placeholder_batch_dict[key] = batch.batch[key][:1].repeat(num_to_add, *([1] * (batch.batch[key].ndim - 1)))
 
-                # Pad to match dimensions
-                prompt_tokens = prompt_tokens + [self.tokenizer.pad_token_id] * (max_prompt_len - len(prompt_tokens))
-                response_tokens = response_tokens + [self.tokenizer.pad_token_id] * (max_response_len - len(response_tokens))
+                from tensordict import TensorDict
+                placeholder_tensor_batch = TensorDict(placeholder_batch_dict, batch_size=torch.Size([num_to_add]))
 
-                augment_prompts.append(prompt_tokens)
-                augment_responses.append(response_tokens)
+                # Create placeholder non_tensor_batch
+                placeholder_non_tensor_batch = {}
+                if hasattr(batch, 'non_tensor_batch') and batch.non_tensor_batch:
+                    for key in batch.non_tensor_batch.keys():
+                        if isinstance(batch.non_tensor_batch[key], np.ndarray):
+                            # Replicate the first sample as placeholder
+                            placeholder_non_tensor_batch[key] = np.array([batch.non_tensor_batch[key][0]] * num_to_add)
 
-            # Convert to tensors
-            augment_prompts_tensor = torch.tensor(augment_prompts, dtype=torch.long)
-            augment_responses_tensor = torch.tensor(augment_responses, dtype=torch.long)
+                # Add from_memory_db markers for placeholder samples
+                # Note: DataProto requires dtype=object for non_tensor_batch
+                placeholder_non_tensor_batch['from_memory_db'] = np.array([True] * num_to_add, dtype=object)
 
-            # Create attention masks
-            augment_prompt_mask = (augment_prompts_tensor != self.tokenizer.pad_token_id).long()
-            augment_response_mask = (augment_responses_tensor != self.tokenizer.pad_token_id).long()
+                placeholder_dataproto = DataProto(
+                    batch=placeholder_tensor_batch,
+                    non_tensor_batch=placeholder_non_tensor_batch,
+                    meta_info={}
+                )
 
-            # Concatenate with existing batch
-            batch.batch['prompts'] = torch.cat([batch.batch['prompts'], augment_prompts_tensor], dim=0)
+                # Ensure original batch has from_memory_db markers (False for original samples)
+                if not hasattr(batch, 'non_tensor_batch'):
+                    batch.non_tensor_batch = {}
+                if 'from_memory_db' not in batch.non_tensor_batch:
+                    original_size = len(batch.batch)
+                    batch.non_tensor_batch['from_memory_db'] = np.array([False] * original_size, dtype=object)
 
-            # Update batch metadata (non_tensor_batch)
-            for key in batch.non_tensor_batch.keys():
-                if isinstance(batch.non_tensor_batch[key], np.ndarray):
-                    # Pad with placeholder values
-                    pad_values = np.array([batch.non_tensor_batch[key][0]] * len(bad_responses))
-                    batch.non_tensor_batch[key] = np.concatenate([batch.non_tensor_batch[key], pad_values])
+                # Use DataProto.concat to merge batch with placeholders
+                print(f"[Memory DB] Aligning batch from {len(batch.batch)} to {len(batch.batch) + num_to_add} using DataProto.concat")
+                batch = DataProto.concat([batch, placeholder_dataproto])
 
-            # Update gen_batch_output
-            gen_batch_output.batch['responses'] = torch.cat([gen_batch_output.batch['responses'], augment_responses_tensor], dim=0)
+            # Note: old_log_probs and other fields will be computed after augmentation by compute_log_prob
+            # We don't need to fill them with placeholder values here
 
-            # Update attention_mask
-            if 'attention_mask' in gen_batch_output.batch:
-                augment_attention_mask = torch.cat([augment_prompt_mask, augment_response_mask], dim=1)
-                gen_batch_output.batch['attention_mask'] = torch.cat([gen_batch_output.batch['attention_mask'], augment_attention_mask], dim=0)
-
-            # Update other fields in gen_batch_output if they exist
-            if 'old_log_probs' in gen_batch_output.batch:
-                # For old_log_probs, we need to fill with zeros or compute them
-                # For simplicity, we'll fill with small negative values (low probability)
-                augment_log_probs = torch.full((len(bad_responses), gen_batch_output.batch['old_log_probs'].shape[1]),
-                                               -10.0, dtype=gen_batch_output.batch['old_log_probs'].dtype)
-                gen_batch_output.batch['old_log_probs'] = torch.cat([gen_batch_output.batch['old_log_probs'], augment_log_probs], dim=0)
-
-            print(f"[Memory DB] Batch augmented. New batch size: {len(batch.batch)}")
+            print(f"[Memory DB] Batch augmented. New gen_batch_output size: {gen_batch_output.batch['responses'].shape[0]}")
+            print(f"[Memory DB] Log probabilities will be computed next by compute_log_prob for all samples")
 
             return batch, gen_batch_output
 

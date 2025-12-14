@@ -117,7 +117,7 @@ class JSONDatabase:
                 "experience": data.get('experience', []),
                 "llm_answers_and_score": []
             }
-            
+
             # Handle image data
             if 'image' in data:
                 if isinstance(data['image'], list):
@@ -126,6 +126,10 @@ class JSONDatabase:
                     training_entry['image'] = [data['image']]
             else:
                 training_entry['image'] = []
+
+            # Handle prompt embedding if provided
+            if 'prompt_embedding' in data:
+                training_entry['prompt_embedding'] = data['prompt_embedding']
                 
             # If entry already exists, preserve existing LLM responses and experience
             if training_id in db_data['training_data']:
