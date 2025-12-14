@@ -1533,17 +1533,17 @@ class RayPPOTrainer(object):
                 print(f"Score: {response['score']:.3f} | Similarity: {response['similarity']:.3f}")
 
                 print(f"\n[Matched Current Prompt] (Similarity: {max_sim:.3f})")
-                print(f"{matched_prompt_text[:300]}...")  # Print first 300 chars
+                print(f"{matched_prompt_text}")  # Print full prompt
                 print(f"Embedding (first 10 dims): {matched_current_emb[:10]}")
                 print(f"Embedding shape: {matched_current_emb.shape}, L2 norm: {np.linalg.norm(matched_current_emb):.3f}")
 
                 print(f"\n[Retrieved Negative Prompt]")
-                print(f"{response['prompt'][:300]}...")  # Print first 300 chars
+                print(f"{response['prompt']}")  # Print full prompt
                 print(f"Embedding (first 10 dims): {stored_emb[0][:10]}")
                 print(f"Embedding shape: {stored_emb[0].shape}, L2 norm: {np.linalg.norm(stored_emb[0]):.3f}")
 
                 print(f"\n[Retrieved Negative Response]")
-                print(f"{response['response'][:500]}...")  # Print first 500 chars
+                print(f"{response['response']}")  # Print full response
 
                 # Print embedding statistics
                 print(f"\n[Embedding Comparison]")
@@ -1637,7 +1637,40 @@ class RayPPOTrainer(object):
             import traceback
             traceback.print_exc()
             return None
-        
+    def _mask_system_content_in_response(self, response_text: str) -> str:
+        """
+        Mask <information> blocks and system error messages in response text.
+
+        This is used for creating responses_with_info_mask for memory DB samples,
+        where we want to train on the model's actual output but not on:
+        1. <information>...</information> blocks (search results)
+        2. System-inserted error message for invalid actions
+
+        Args:
+            response_text: The response text to mask
+
+        Returns:
+            Masked response text with system content replaced by empty strings
+        """
+        import re
+
+        # Mask <information> blocks
+        masked_text = re.sub(r'<information>.*?</information>', '', response_text, flags=re.DOTALL)
+
+        # Mask the system error message for invalid actions
+        system_error_msg = (
+            "My previous action is invalid. "
+            "If I want to search, I should put the query between <search> and </search>. "
+            "If I want to give the final answer, I should put the answer between <answer> and </answer>. "
+            "Let me try again."
+        )
+        # Also handle variations with newlines
+        masked_text = masked_text.replace(system_error_msg, '')
+        masked_text = masked_text.replace(f'\n{system_error_msg}\n', '')
+        masked_text = masked_text.replace(system_error_msg.replace('. ', '.\n'), '')
+
+        return masked_text
+
     def _create_dataproto_from_memory_db_responses(self, bad_responses: list, reference_batch: DataProto) -> DataProto:
         """
         Create a DataProto from retrieved memory DB responses.
@@ -1652,11 +1685,16 @@ class RayPPOTrainer(object):
         # Tokenize the retrieved bad responses
         augment_prompts = []
         augment_responses = []
+        augment_responses_masked = []  # For responses_with_info_mask
 
         for item in bad_responses:
             # Tokenize prompt and response
             prompt_tokens = self.tokenizer.encode(item['prompt'], add_special_tokens=True)
             response_tokens = self.tokenizer.encode(item['response'], add_special_tokens=False)
+
+            # Create masked version (mask <information> and system messages)
+            masked_response_text = self._mask_system_content_in_response(item['response'])
+            response_tokens_masked = self.tokenizer.encode(masked_response_text, add_special_tokens=False)
 
             # Truncate if necessary
             max_prompt_len = reference_batch.batch['prompts'].shape[1]
@@ -1666,22 +1704,32 @@ class RayPPOTrainer(object):
                 prompt_tokens = prompt_tokens[:max_prompt_len]
             if len(response_tokens) > max_response_len:
                 response_tokens = response_tokens[:max_response_len]
+            if len(response_tokens_masked) > max_response_len:
+                response_tokens_masked = response_tokens_masked[:max_response_len]
 
             # Pad to match dimensions
             prompt_tokens = prompt_tokens + [self.tokenizer.pad_token_id] * (max_prompt_len - len(prompt_tokens))
             response_tokens = response_tokens + [self.tokenizer.pad_token_id] * (max_response_len - len(response_tokens))
+            response_tokens_masked = response_tokens_masked + [self.tokenizer.pad_token_id] * (max_response_len - len(response_tokens_masked))
 
             augment_prompts.append(prompt_tokens)
             augment_responses.append(response_tokens)
+            augment_responses_masked.append(response_tokens_masked)
 
         # Convert to tensors
         augment_prompts_tensor = torch.tensor(augment_prompts, dtype=torch.long)
         augment_responses_tensor = torch.tensor(augment_responses, dtype=torch.long)
+        augment_responses_masked_tensor = torch.tensor(augment_responses_masked, dtype=torch.long)
 
         # Create attention masks
         augment_prompt_mask = (augment_prompts_tensor != self.tokenizer.pad_token_id).long()
         augment_response_mask = (augment_responses_tensor != self.tokenizer.pad_token_id).long()
+        augment_response_masked_mask = (augment_responses_masked_tensor != self.tokenizer.pad_token_id).long()
         augment_attention_mask = torch.cat([augment_prompt_mask, augment_response_mask], dim=1)
+
+        # Create info_mask: concatenate prompt mask with masked response mask
+        # This ensures <information> blocks and system messages are masked out
+        augment_info_mask = torch.cat([augment_prompt_mask, augment_response_masked_mask], dim=1)
 
         # Create TensorDict matching the structure of reference_batch
         from tensordict import TensorDict
@@ -1695,17 +1743,16 @@ class RayPPOTrainer(object):
             elif key == 'responses':
                 batch_dict[key] = augment_responses_tensor
             elif key == 'responses_with_info_mask':
-                # responses_with_info_mask is same as responses for memory DB samples
-                batch_dict[key] = augment_responses_tensor
+                # Masked version: <information> and system messages replaced with padding
+                batch_dict[key] = augment_responses_masked_tensor
             elif key == 'input_ids':
                 # input_ids is concatenation of prompts and responses
                 batch_dict[key] = torch.cat([augment_prompts_tensor, augment_responses_tensor], dim=1)
             elif key == 'attention_mask':
                 batch_dict[key] = augment_attention_mask
             elif key == 'info_mask':
-                # For memory DB samples, we can use the same mask as attention_mask
-                # or create a mask where all response tokens are True (since we want to train on them)
-                batch_dict[key] = augment_attention_mask
+                # Use masked version to exclude <information> and system messages
+                batch_dict[key] = augment_info_mask
             elif key == 'position_ids':
                 # Create position_ids (0, 1, 2, ..., seq_len-1) for each sample
                 seq_len = augment_attention_mask.shape[1]
@@ -1719,11 +1766,25 @@ class RayPPOTrainer(object):
         # Create TensorDict
         tensor_batch = TensorDict(batch_dict, batch_size=torch.Size([batch_size]))
 
-        # Create non_tensor_batch with marker for memory DB samples
-        # Note: DataProto requires dtype=object for non_tensor_batch
-        non_tensor_batch = {
-            'from_memory_db': np.array([True] * batch_size, dtype=object)
-        }
+        # Create non_tensor_batch with all keys from reference_batch to match structure
+        # This ensures DataProto.concat will work (requires same keys in both batches)
+        non_tensor_batch = {}
+
+        # Copy all keys from reference_batch.non_tensor_batch and create placeholder values
+        if hasattr(reference_batch, 'non_tensor_batch') and reference_batch.non_tensor_batch:
+            for key in reference_batch.non_tensor_batch.keys():
+                # Create placeholder values (replicate first sample or use None)
+                ref_value = reference_batch.non_tensor_batch[key]
+                if isinstance(ref_value, np.ndarray):
+                    # Replicate first sample
+                    placeholder = np.array([ref_value[0]] * batch_size, dtype=object)
+                    non_tensor_batch[key] = placeholder
+                else:
+                    # For non-array types, create array of None
+                    non_tensor_batch[key] = np.array([None] * batch_size, dtype=object)
+
+        # Add marker for memory DB samples
+        non_tensor_batch['from_memory_db'] = np.array([True] * batch_size, dtype=object)
 
         # Create and return DataProto
         return DataProto(
@@ -1770,6 +1831,13 @@ class RayPPOTrainer(object):
                 gen_batch_output
             )
 
+            # Ensure gen_batch_output has from_memory_db key (False for original samples)
+            if not hasattr(gen_batch_output, 'non_tensor_batch') or gen_batch_output.non_tensor_batch is None:
+                gen_batch_output.non_tensor_batch = {}
+            if 'from_memory_db' not in gen_batch_output.non_tensor_batch:
+                original_size = gen_batch_output.batch['responses'].shape[0]
+                gen_batch_output.non_tensor_batch['from_memory_db'] = np.array([False] * original_size, dtype=object)
+
             # Concatenate using DataProto.concat for clean merging
             # This handles both batch (TensorDict) and non_tensor_batch automatically
             print(f"[Memory DB] Before concat: gen_batch_output size = {gen_batch_output.batch['responses'].shape[0]}, memory_db size = {memory_db_dataproto.batch['responses'].shape[0]}")
@@ -1778,6 +1846,10 @@ class RayPPOTrainer(object):
 
             # Align batch with gen_batch_output using DataProto.concat
             # Create placeholder prompts for the memory DB samples (repeat first sample)
+            # IMPORTANT: This must always happen to keep batch and gen_batch_output sizes aligned
+            num_to_add = len(bad_responses)
+            print(f"[Memory DB] batch has 'batch' attr: {hasattr(batch, 'batch')}, batch size: {len(batch.batch) if hasattr(batch, 'batch') else 'N/A'}")
+
             if hasattr(batch, 'batch') and len(batch.batch) > 0:
                 num_to_add = len(bad_responses)
 
@@ -1796,8 +1868,8 @@ class RayPPOTrainer(object):
                 if hasattr(batch, 'non_tensor_batch') and batch.non_tensor_batch:
                     for key in batch.non_tensor_batch.keys():
                         if isinstance(batch.non_tensor_batch[key], np.ndarray):
-                            # Replicate the first sample as placeholder
-                            placeholder_non_tensor_batch[key] = np.array([batch.non_tensor_batch[key][0]] * num_to_add)
+                            # Replicate the first sample as placeholder (use dtype=object as required)
+                            placeholder_non_tensor_batch[key] = np.array([batch.non_tensor_batch[key][0]] * num_to_add, dtype=object)
 
                 # Add from_memory_db markers for placeholder samples
                 # Note: DataProto requires dtype=object for non_tensor_batch
@@ -1819,11 +1891,22 @@ class RayPPOTrainer(object):
                 # Use DataProto.concat to merge batch with placeholders
                 print(f"[Memory DB] Aligning batch from {len(batch.batch)} to {len(batch.batch) + num_to_add} using DataProto.concat")
                 batch = DataProto.concat([batch, placeholder_dataproto])
+            else:
+                print(f"[Memory DB] WARNING: Could not augment batch! batch has no valid data")
+                print(f"[Memory DB] This will cause a size mismatch error in union operation")
 
             # Note: old_log_probs and other fields will be computed after augmentation by compute_log_prob
             # We don't need to fill them with placeholder values here
 
-            print(f"[Memory DB] Batch augmented. New gen_batch_output size: {gen_batch_output.batch['responses'].shape[0]}")
+            # Verify batch sizes match before returning
+            batch_size = len(batch.batch) if hasattr(batch, 'batch') else 0
+            gen_batch_size = gen_batch_output.batch['responses'].shape[0]
+            print(f"[Memory DB] Final verification: batch size = {batch_size}, gen_batch_output size = {gen_batch_size}")
+            if batch_size != gen_batch_size:
+                print(f"[Memory DB] ERROR: Size mismatch! This will cause union() to fail")
+                raise AssertionError(f"Batch size mismatch after augmentation: batch={batch_size}, gen_batch_output={gen_batch_size}")
+
+            print(f"[Memory DB] Batch augmented successfully. Size: {gen_batch_size}")
             print(f"[Memory DB] Log probabilities will be computed next by compute_log_prob for all samples")
 
             return batch, gen_batch_output

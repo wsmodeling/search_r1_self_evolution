@@ -994,9 +994,9 @@ class LLMGenerationManager:
 
         num_gpus = self.config.num_gpus
 
-        # Convert all tensors to fp32
+        # Ensure all tensors are long type and contiguous (H20 GPU compatibility)
         for key in active_batch.batch.keys():
-            active_batch.batch[key] = active_batch.batch[key].long()
+            active_batch.batch[key] = active_batch.batch[key].long().contiguous()
 
         if num_gpus <= 1:
             output = self.actor_rollout_wg.generate_sequences(active_batch)
@@ -1020,7 +1020,7 @@ class LLMGenerationManager:
 
         padded_active_batch = DataProto.from_dict(padded_batch)
         for key in padded_active_batch.batch.keys():
-            padded_active_batch.batch[key] = padded_active_batch.batch[key].long()
+            padded_active_batch.batch[key] = padded_active_batch.batch[key].long().contiguous()
 
         # Copy meta_info from original batch
         if hasattr(active_batch, 'meta_info') and active_batch.meta_info:

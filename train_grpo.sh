@@ -101,7 +101,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
-    trainer.test_freq=20 \
+    trainer.test_freq=5 \
     trainer.project_name=$WAND_PROJECT \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.total_epochs=15 \
@@ -115,6 +115,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     enable_transfer_learning=false \
     enable_prompt_response_verification=false \
     disable_batch_balancing=true \
+    memory_db.enable=false \
     2>&1 | sed -E 's/^\x1b\[[0-9;]*m//; s/^\(main_task pid=[0-9]+\) //' | tee $EXPERIMENT_NAME.log
 
 
