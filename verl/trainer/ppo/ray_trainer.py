@@ -428,10 +428,11 @@ class RayPPOTrainer(object):
             if self.memory_db_use_embedding:
                 try:
                     from transformers import AutoModel
-                    model_path = self.config.actor_rollout_ref.model.get('path',
-                                 self.config.actor_rollout_ref.model.get('pretrained_model', 'Qwen/Qwen2.5-7B'))
-                    print(f"[Memory DB] Loading base model for embeddings from: {model_path}")
-                    self.embedding_model = AutoModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.float16)
+                    # Use smaller 3B model for faster embedding extraction
+                    # Can be overridden via memory_db.embedding_model_path config
+                    embedding_model_path = memory_db_config.get('embedding_model_path', 'Qwen/Qwen2.5-3B-Instruct')
+                    print(f"[Memory DB] Loading embedding model from: {embedding_model_path}")
+                    self.embedding_model = AutoModel.from_pretrained(embedding_model_path, trust_remote_code=True, torch_dtype=torch.float16)
                     self.embedding_model.eval()  # Set to eval mode
                     # Move to GPU if available
                     if torch.cuda.is_available():
@@ -634,6 +635,10 @@ class RayPPOTrainer(object):
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+
+        print(f"\n{'='*80}")
+        print(f"Validate(self) - end validation")
+        print(f"{'='*80}")
 
         return metric_dict
 
@@ -1282,9 +1287,84 @@ class RayPPOTrainer(object):
 
         return batch, metrics
 
+    def _extract_prompt_embeddings_batch(self, prompt_ids_list):
+        """
+        Extract embeddings from the last token of prompts in batch using the frozen base model.
+
+        Args:
+            prompt_ids_list: List of prompt token ID tensors
+
+        Returns:
+            List of embedding vectors as numpy arrays, or None for failed extractions
+        """
+        if not self.memory_db_use_embedding or self.embedding_model is None:
+            return [None] * len(prompt_ids_list)
+
+        try:
+            with torch.no_grad():
+                device = next(self.embedding_model.parameters()).device
+
+                # Prepare batch data
+                processed_prompts = []
+                valid_indices = []
+
+                for i, prompt_ids in enumerate(prompt_ids_list):
+                    # Remove padding tokens
+                    non_pad_mask = prompt_ids != self.tokenizer.pad_token_id
+                    actual_prompt_ids = prompt_ids[non_pad_mask]
+
+                    if len(actual_prompt_ids) > 0:
+                        processed_prompts.append(actual_prompt_ids)
+                        valid_indices.append(i)
+
+                if len(processed_prompts) == 0:
+                    return [None] * len(prompt_ids_list)
+
+                # Pad prompts to same length for batching
+                max_len = max(len(p) for p in processed_prompts)
+                batch_input_ids = torch.full((len(processed_prompts), max_len),
+                                            self.tokenizer.pad_token_id,
+                                            dtype=processed_prompts[0].dtype,
+                                            device=device)
+                attention_mask = torch.zeros((len(processed_prompts), max_len),
+                                            dtype=torch.long, device=device)
+
+                for i, prompt in enumerate(processed_prompts):
+                    batch_input_ids[i, :len(prompt)] = prompt.to(device)
+                    attention_mask[i, :len(prompt)] = 1
+
+                # Get model output in batch
+                outputs = self.embedding_model(batch_input_ids,
+                                              attention_mask=attention_mask,
+                                              output_hidden_states=True)
+
+                # Extract last valid token embedding for each sequence
+                last_hidden_state = outputs.last_hidden_state  # (batch_size, seq_len, hidden_dim)
+                embeddings = []
+
+                for i in range(len(processed_prompts)):
+                    # Find last non-padding token
+                    seq_len = attention_mask[i].sum().item()
+                    last_token_embedding = last_hidden_state[i, seq_len - 1, :]
+                    embeddings.append(last_token_embedding.cpu().numpy())
+
+                # Map embeddings back to original indices
+                result = [None] * len(prompt_ids_list)
+                for i, valid_idx in enumerate(valid_indices):
+                    result[valid_idx] = embeddings[i]
+
+                return result
+
+        except Exception as e:
+            print(f"[Memory DB] Warning: Failed to extract embeddings in batch: {e}")
+            import traceback
+            traceback.print_exc()
+            return [None] * len(prompt_ids_list)
+
     def _extract_prompt_embedding(self, prompt_ids):
         """
         Extract embedding from the last token of the prompt using the frozen base model.
+        (Single-sample wrapper for backward compatibility)
 
         Args:
             prompt_ids: Tensor of prompt token IDs (can be on GPU or CPU)
@@ -1292,35 +1372,8 @@ class RayPPOTrainer(object):
         Returns:
             Embedding vector as numpy array, or None if embedding model is not available
         """
-        if not self.memory_db_use_embedding or self.embedding_model is None:
-            return None
-
-        try:
-            with torch.no_grad():
-                # Remove padding tokens and get actual prompt
-                non_pad_mask = prompt_ids != self.tokenizer.pad_token_id
-                actual_prompt_ids = prompt_ids[non_pad_mask]
-
-                if len(actual_prompt_ids) == 0:
-                    return None
-
-                # Move to same device as embedding model
-                device = next(self.embedding_model.parameters()).device
-                input_ids = actual_prompt_ids.unsqueeze(0).to(device)  # Add batch dimension
-
-                # Get model output
-                outputs = self.embedding_model(input_ids, output_hidden_states=True)
-
-                # Extract last token embedding from last hidden state
-                last_hidden_state = outputs.last_hidden_state  # (1, seq_len, hidden_dim)
-                last_token_embedding = last_hidden_state[0, -1, :]  # (hidden_dim,)
-
-                # Convert to numpy and return
-                return last_token_embedding.cpu().numpy()
-
-        except Exception as e:
-            print(f"[Memory DB] Warning: Failed to extract embedding: {e}")
-            return None
+        result = self._extract_prompt_embeddings_batch([prompt_ids])
+        return result[0] if result else None
 
     def _save_low_reward_responses_to_memory_db(self, batch, step):
         """
@@ -1363,10 +1416,28 @@ class RayPPOTrainer(object):
                 print(f"[Memory DB] No new low-reward responses to save (threshold: {self.memory_db_low_reward_threshold})")
                 return
 
+            # Limit to at most 10 responses to avoid slow embedding extraction
+            max_save_count = 10
+            if len(low_reward_indices) > max_save_count:
+                print(f"[Memory DB] Found {len(low_reward_indices)} low-reward responses, limiting to {max_save_count} to save time")
+                low_reward_indices = low_reward_indices[:max_save_count]
+
             print(f"\n[Memory DB] Saving {len(low_reward_indices)} new low-reward responses (threshold: {self.memory_db_low_reward_threshold})")
 
             # Save each low-reward response
-            for idx in low_reward_indices:
+            import time
+            total_samples = len(low_reward_indices)
+            start_time = time.time()
+
+            # Extract all embeddings in one batch for efficiency
+            embed_start = time.time()
+            prompt_ids_list = [prompts[int(idx)] for idx in low_reward_indices]
+            prompt_embeddings = self._extract_prompt_embeddings_batch(prompt_ids_list)
+            embed_time = time.time() - embed_start
+            print(f"[Memory DB] Batch embedding extraction for {total_samples} samples took {embed_time:.2f}s ({embed_time/total_samples:.3f}s per sample)")
+
+            # Now save each response with its pre-computed embedding
+            for i, idx in enumerate(low_reward_indices):
                 idx = int(idx)
 
                 # Decode prompt and response
@@ -1381,8 +1452,15 @@ class RayPPOTrainer(object):
                 # Get score
                 score = sequence_scores[idx].item()
 
-                # Extract prompt embedding from last token
-                prompt_embedding = self._extract_prompt_embedding(prompt_ids_tensor)
+                # Progress logging every 10 samples or on first/last
+                if i == 0 or i == total_samples - 1 or (i + 1) % 10 == 0:
+                    elapsed = time.time() - start_time
+                    avg_time = elapsed / (i + 1) if i > 0 else 0
+                    eta = avg_time * (total_samples - i - 1) if avg_time > 0 else 0
+                    print(f"[Memory DB] Progress: {i+1}/{total_samples} ({100*(i+1)/total_samples:.1f}%) - {elapsed:.1f}s elapsed, ETA: {eta:.1f}s")
+
+                # Use pre-computed embedding
+                prompt_embedding = prompt_embeddings[i]
 
                 # Get UID if available
                 uid = batch.non_tensor_batch.get('uid', [None] * len(batch.batch))[idx]
@@ -1421,7 +1499,9 @@ class RayPPOTrainer(object):
                     reflexion=f"Low-reward response from step {step}"
                 )
 
-            print(f"[Memory DB] Successfully saved {len(low_reward_indices)} responses")
+            total_time = time.time() - start_time
+            avg_per_sample = total_time / total_samples if total_samples > 0 else 0
+            print(f"[Memory DB] Successfully saved {len(low_reward_indices)} responses in {total_time:.1f}s (avg: {avg_per_sample:.2f}s/sample)")
 
         except Exception as e:
             print(f"[Memory DB] Error saving low-reward responses: {e}")
@@ -1463,12 +1543,17 @@ class RayPPOTrainer(object):
         try:
             import numpy as np
 
-            # Extract embeddings from current batch
-            current_embeddings = []
-            for i in range(current_batch_prompts.shape[0]):
-                emb = self._extract_prompt_embedding(current_batch_prompts[i])
-                if emb is not None:
-                    current_embeddings.append(emb)
+            # Extract embeddings from current batch using batched extraction
+            print(f"[Memory DB] Extracting embeddings for {current_batch_prompts.shape[0]} prompts in batch...")
+            import time
+            embed_start = time.time()
+            prompt_list = [current_batch_prompts[i] for i in range(current_batch_prompts.shape[0])]
+            current_embeddings_list = self._extract_prompt_embeddings_batch(prompt_list)
+            embed_time = time.time() - embed_start
+            print(f"[Memory DB] Batch embedding extraction took {embed_time:.2f}s ({embed_time/len(prompt_list):.3f}s per sample)")
+
+            # Filter out None embeddings
+            current_embeddings = [emb for emb in current_embeddings_list if emb is not None]
 
             if len(current_embeddings) == 0:
                 print("[Memory DB] Could not extract embeddings from current batch, falling back to score-based retrieval")

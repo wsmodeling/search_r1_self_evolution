@@ -5,7 +5,7 @@ export DATA_DIR='data/nq_search'
 export RAY_COLOR_PREFIX=0
 export RAY_DEDUP_LOGS=0
 
-WAND_PROJECT='Search-R1-baseline2'
+WAND_PROJECT='Search-R1-self_evolution_test_1214'
 
 # Clean up any existing Ray instances to avoid actor registry conflicts
 echo "Cleaning up existing Ray instances..."
@@ -112,10 +112,11 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     retriever.url="http://127.0.0.1:8000/retrieve" \
     retriever.topk=3 \
     enable_revision=true \
-    enable_transfer_learning=false \
+    enable_transfer_learning=true \
     enable_prompt_response_verification=false \
     disable_batch_balancing=true \
     memory_db.enable=false \
+    memory_db.use_embedding=false \
     2>&1 | sed -E 's/^\x1b\[[0-9;]*m//; s/^\(main_task pid=[0-9]+\) //' | tee $EXPERIMENT_NAME.log
 
 
